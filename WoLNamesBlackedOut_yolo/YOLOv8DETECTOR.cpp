@@ -36,6 +36,7 @@ public:
     bool loadModel(const char* model_path);
     std::optional<std::vector<BoundingBox>> inference(const cv::Mat& image);
     bool PreProcess(cv::Mat& iImg, int iImgSize, cv::Mat& oImg);
+    bool PreProcess2(cv::Mat& iImg, int targetWidth, int targetHeight, cv::Mat& oImg);
     float resizeScales;
 };
 
@@ -155,6 +156,41 @@ bool YOLOv8Detector::PreProcess(cv::Mat& iImg, int iImgSize, cv::Mat& oImg)
     return true;
 }
 
+bool YOLOv8Detector::PreProcess2(cv::Mat& iImg, int targetWidth, int targetHeight, cv::Mat& oImg)
+{
+    // 入力画像のコピーを作成
+    oImg = iImg.clone();
+
+    // 目標のアスペクト比
+    float targetRatio = static_cast<float>(targetWidth) / targetHeight;
+    // 入力画像のアスペクト比
+    float imgRatio = static_cast<float>(iImg.cols) / iImg.rows;
+
+    // 横長、またはアスペクト比が同じ場合：横幅基準でリサイズ
+    if (imgRatio >= targetRatio) {
+        // 横幅をtargetWidthに合わせるのでスケールは入力横幅 / targetWidth
+        resizeScales = iImg.cols / static_cast<float>(targetWidth);
+        // 高さは元サイズから同じスケールで調整
+        cv::resize(oImg, oImg, cv::Size(targetWidth, static_cast<int>(iImg.rows / resizeScales)));
+    }
+    // 縦長の場合：縦幅基準でリサイズ
+    else {
+        // 縦幅をtargetHeightに合わせるのでスケールは入力縦幅 / targetHeight
+        resizeScales = iImg.rows / static_cast<float>(targetHeight);
+        cv::resize(oImg, oImg, cv::Size(static_cast<int>(iImg.cols / resizeScales), targetHeight));
+    }
+
+    // 出力テンソル（背景は0で埋める＝黒）の作成
+    cv::Mat tempImg = cv::Mat::zeros(targetHeight, targetWidth, CV_8UC3);
+    // リサイズ済み画像を左上にコピー（必要に応じて中央寄せやオフセットを追加可能）
+    oImg.copyTo(tempImg(cv::Rect(0, 0, oImg.cols, oImg.rows)));
+    oImg = tempImg;
+
+    // カラースペース変換が必要ならここで変換（例：BGR -> RGB）
+    // cv::cvtColor(oImg, oImg, cv::COLOR_BGR2RGB);
+
+    return true;
+}
 
 std::optional<std::vector<YOLOv8Detector::BoundingBox>> YOLOv8Detector::inference(const cv::Mat& image)
 {
@@ -282,8 +318,6 @@ extern "C" __declspec(dllexport) MY_API int preview_api(const char* image_path, 
 	std::string imagePathStr(image_path);
     // モデルファイルのパス
     const char* model_path = "./my_yolov8m.onnx";
-    // 画像ファイルのパス
-    //const char* image_path = "./b_output_0015.png";
 
     // OpenCV の色を作成
     cv::Scalar name_color_Scalar(name_color.b, name_color.g, name_color.r);
@@ -304,12 +338,14 @@ extern "C" __declspec(dllexport) MY_API int preview_api(const char* image_path, 
         //std::cerr << "Failed to load image." << std::endl;
         return -1;
     }
-    cv::Mat o_image = image.clone();
+    //cv::Mat o_image = image.clone();
+    cv::Mat o_image;
 
     if (no_inference==true)
 	{
 		// 画像の前処理
 		detector.PreProcess(image, 1280, o_image);
+         //detector.PreProcess2(image, 1280, 736, o_image);
 		// 物体検出
 		auto result = detector.inference(o_image);
 		if (result) {
@@ -375,9 +411,195 @@ extern "C" __declspec(dllexport) MY_API int preview_api(const char* image_path, 
 }
 
 
+// ffmpeg の標準出力（子プロセスの出力）をパイプでリダイレクトしてプロセスを起動する
+HANDLE StartProcessWithRedirectedStdout(const std::string& commandLine, PROCESS_INFORMATION& pi) {
+    SECURITY_ATTRIBUTES saAttr = { sizeof(SECURITY_ATTRIBUTES), nullptr, TRUE };
+    HANDLE hChildStdOutRead = NULL;
+    HANDLE hChildStdOutWrite = NULL;
+    if (!CreatePipe(&hChildStdOutRead, &hChildStdOutWrite, &saAttr, 0)) {
+        std::cerr << "CreatePipe (stdout) failed." << std::endl;
+        return NULL;
+    }
+    // 親側のハンドルが子に継承されないようにする
+    if (!SetHandleInformation(hChildStdOutRead, HANDLE_FLAG_INHERIT, 0)) {
+        std::cerr << "SetHandleInformation (stdout) failed." << std::endl;
+        return NULL;
+    }
+    STARTUPINFOA si;
+    ZeroMemory(&si, sizeof(si));
+    si.cb = sizeof(si);
+    // 子プロセスの標準出力（とエラー出力）を pipe の書き側に割り当てる
+    si.hStdOutput = hChildStdOutWrite;
+    si.hStdError = hChildStdOutWrite;
+    si.dwFlags |= STARTF_USESTDHANDLES;
+    si.wShowWindow = SW_HIDE;  // 非表示に設定
+    ZeroMemory(&pi, sizeof(pi));
 
-void write_frame(FILE* output_pipe, const cv::Mat& frame) {
-    fwrite(frame.data, 1, frame.total() * frame.elemSize(), output_pipe);
+    // ここで、std::string を変更可能なバッファ（vector）に変換する
+    std::vector<char> cmdBuffer(commandLine.begin(), commandLine.end());
+    cmdBuffer.push_back('\0');  // ヌル文字を追加して終端を保証
+
+    if (!CreateProcessA(
+        NULL,
+        cmdBuffer.data(), // 変更可能なバッファを渡す
+        NULL,
+        NULL,
+        TRUE,   // 子プロセスにもハンドルを継承させる
+        CREATE_NO_WINDOW,  // コンソールウィンドウを表示させない
+        NULL,
+        NULL,
+        &si,
+        &pi))
+    {
+        std::cerr << "CreateProcess (stdout redirect) failed with error: " << GetLastError() << std::endl;
+        CloseHandle(hChildStdOutWrite);
+        CloseHandle(hChildStdOutRead);
+        return NULL;
+    }
+    // 親側では書き側は不要なのでクローズする
+    CloseHandle(hChildStdOutWrite);
+    return hChildStdOutRead;
+}
+
+// ffmpeg の標準入力（子プロセスが受け取る入力）をパイプでリダイレクトしてプロセスを起動する
+HANDLE StartProcessWithRedirectedStdin(const std::string& commandLine, PROCESS_INFORMATION& pi) {
+    SECURITY_ATTRIBUTES saAttr = { sizeof(SECURITY_ATTRIBUTES), nullptr, TRUE };
+    HANDLE hChildStdInRead = NULL;
+    HANDLE hChildStdInWrite = NULL;
+    if (!CreatePipe(&hChildStdInRead, &hChildStdInWrite, &saAttr, 0)) {
+        std::cerr << "CreatePipe (stdin) failed." << std::endl;
+        return NULL;
+    }
+    // 子プロセスに継承される書き側は不要なので、親側では SetHandleInformation で外す
+    if (!SetHandleInformation(hChildStdInWrite, HANDLE_FLAG_INHERIT, 0)) {
+        std::cerr << "SetHandleInformation (stdin) failed." << std::endl;
+        return NULL;
+    }
+    STARTUPINFOA si;
+    ZeroMemory(&si, sizeof(si));
+    si.cb = sizeof(si);
+    // 子プロセスはパイプの読み側から標準入力を受け取る
+    si.hStdInput = hChildStdInRead;
+    si.dwFlags |= STARTF_USESTDHANDLES;
+    si.wShowWindow = SW_HIDE;  // 非表示に設定
+    ZeroMemory(&pi, sizeof(pi));
+
+    // ここで、std::string を変更可能なバッファ（vector）に変換する
+    std::vector<char> cmdBuffer(commandLine.begin(), commandLine.end());
+    cmdBuffer.push_back('\0');  // ヌル文字を追加して終端を保証
+
+    if (!CreateProcessA(
+        NULL,
+        cmdBuffer.data(), // 変更可能なバッファを渡す
+        NULL,
+        NULL,
+        TRUE,  // ハンドルの継承を有効にする
+        CREATE_NO_WINDOW,  // コンソールウィンドウを表示させない
+        NULL,
+        NULL,
+        &si,
+        &pi))
+    {
+        std::cerr << "CreateProcess (stdin redirect) failed with error: " << GetLastError() << std::endl;
+        CloseHandle(hChildStdInRead);
+        CloseHandle(hChildStdInWrite);
+        return NULL;
+    }
+    // 親側は読み側を不要とするのでクローズ
+    CloseHandle(hChildStdInRead);
+    return hChildStdInWrite;
+}
+
+// 子プロセス（ffmpeg）のパイプから1フレーム分の raw video を読み出す関数
+cv::Mat ReadFrameFromPipe(HANDLE hPipe, int width, int height) {
+    size_t frameSize = static_cast<size_t>(width * height * 3);
+    std::vector<unsigned char> buffer(frameSize);
+    size_t totalBytesRead = 0;
+    DWORD bytesRead = 0;
+
+    while (totalBytesRead < frameSize) {
+        BOOL success = ReadFile(hPipe, buffer.data() + totalBytesRead,
+            static_cast<DWORD>(frameSize - totalBytesRead),
+            &bytesRead, NULL);
+        if (!success) {
+            DWORD err = GetLastError();
+            if (err == ERROR_BROKEN_PIPE) {
+                // EOF に到達したと判断
+                std::cerr << "ReadFile returned 0 with ERROR_BROKEN_PIPE." << std::endl;
+                break;
+            }
+            else {
+                std::cerr << "ReadFile failed with error: " << err << std::endl;
+                break;
+            }
+        }
+        if (bytesRead == 0) {
+            // データがもう来ないので終了
+            std::cerr << "ReadFile returned 0 bytes." << std::endl;
+            break;
+        }
+        totalBytesRead += bytesRead;
+    }
+
+    if (totalBytesRead != frameSize) {
+        std::cerr << "ReadFile incomplete. Expected " << frameSize
+            << " bytes, got " << totalBytesRead << std::endl;
+        // ※デバッグ用に受け取った内容を出力可能
+        return cv::Mat();  // 空のフレームを返してループ抜けにする
+    }
+
+    cv::Mat frame(height, width, CV_8UC3);
+    std::memcpy(frame.data, buffer.data(), frameSize);
+    return frame;
+}
+
+
+
+// 子プロセス（ffmpeg）のパイプへ1フレーム分の raw video を書き込む関数
+void WriteFrameToPipe(HANDLE hPipe, const cv::Mat& frame) {
+    DWORD bytesWritten = 0;
+    size_t dataSize = frame.total() * frame.elemSize();
+    BOOL success = WriteFile(hPipe, frame.data, static_cast<DWORD>(dataSize), &bytesWritten, NULL);
+    if (!success || bytesWritten != dataSize) {
+        std::cerr << "WriteFile failed or incomplete write. Expected " << dataSize << " bytes, wrote " << bytesWritten << std::endl;
+    }
+}
+
+// _popen を使わずに、ffmpeg プロセスを起動しリダイレクトされたパイプ (ハンドル) を渡すユーティリティ関数群
+void run_ffmpeg_input(const std::string& cmd, std::function<void(HANDLE)> func) {
+    PROCESS_INFORMATION pi;
+    HANDLE hPipe = StartProcessWithRedirectedStdout(cmd, pi);
+    if (hPipe == NULL) {
+        std::cerr << "Failed to start ffmpeg input process." << std::endl;
+        return;
+    }
+    // ここで hPipe を使って、ffmpeg が出力する raw video を読み出す
+    func(hPipe);
+    // プロセス終了を待機
+    WaitForSingleObject(pi.hProcess, INFINITE);
+    DWORD exitCode = 0;
+    if (GetExitCodeProcess(pi.hProcess, &exitCode)) {
+        std::cerr << "ffmpeg input process exited with code: " << exitCode << std::endl;
+    }
+    CloseHandle(pi.hProcess);
+    CloseHandle(pi.hThread);
+    //CloseHandle(hPipe);
+}
+
+void run_ffmpeg_output(const std::string& cmd, std::function<void(HANDLE)> func) {
+    PROCESS_INFORMATION pi;
+    HANDLE hPipe = StartProcessWithRedirectedStdin(cmd, pi);
+    if (hPipe == NULL) {
+        std::cerr << "Failed to start ffmpeg output process." << std::endl;
+        return;
+    }
+    // 書き込み用パイプ hPipe を使って、raw video を ffmpeg に書き込む
+    func(hPipe);
+    //// パイプを閉じることで ffmpeg 側に EOF を通知する
+    //CloseHandle(hPipe);
+    WaitForSingleObject(pi.hProcess, INFINITE);
+    CloseHandle(pi.hProcess);
+    CloseHandle(pi.hThread);
 }
 
 
@@ -395,6 +617,7 @@ void dml_process_frame(const cv::Mat& in_frame, cv::Mat& out_frame, YOLOv8Detect
 
         cv::Mat processed_frame;
         detector.PreProcess(const_cast<cv::Mat&>(in_frame), in_frame.cols, processed_frame);
+        //detector.PreProcess2(const_cast<cv::Mat&>(in_frame), 1280, 736, processed_frame);
 
         auto result = detector.inference(processed_frame);
 
@@ -456,58 +679,44 @@ void dml_process_frame(const cv::Mat& in_frame, cv::Mat& out_frame, YOLOv8Detect
     std::cerr << "dml_process_frame: Finished processing frame" << std::endl;
 }
 
+// ワイド文字列 (std::wstring) を UTF-8 の std::string に変換する関数
+std::string WideStringToString(const std::wstring& wstr) {
+    if (wstr.empty())
+        return std::string();
 
-
-cv::Mat read_frame(FILE* process, int width, int height) {
-    std::cerr << "Before buffer allocation - Width: " << width << ", Height: " << height << std::endl;
-    cv::Mat frame(height, width, CV_8UC3);
-    size_t frame_size = width * height * 3;
-    std::cerr << "Frame size: " << frame_size << std::endl;
-    std::vector<unsigned char> buffer(frame_size);
-    std::cerr << "After buffer allocation - Width: " << width << ", Height: " << height << std::endl;
-
-    size_t bytes_read = fread(buffer.data(), 1, frame_size, process);
-    std::cerr << "fread returned bytes_read: " << bytes_read << std::endl; // ★ fread の戻り値をログ出力
-    std::cerr << "feof(process) is: " << feof(process) << std::endl;    // ★ feof の評価結果をログ出力
-    std::cerr << "ferror(process) is: " << ferror(process) << std::endl;  // ★ ferror の評価結果をログ出力
-
-    if (bytes_read != frame_size) {
-        std::cerr << "Expected to read " << frame_size << " bytes, but only read " << bytes_read << " bytes." << std::endl;
-        if (feof(process)) {
-            std::cerr << "Error: Reached end of file before reading expected frame size." << std::endl;
-            return cv::Mat(); // ★ EOF の場合は空の cv::Mat を返す
-
-        }
-        else if (ferror(process)) {
-            std::cerr << "Error: An error occurred while reading the file." << std::endl;
-            return cv::Mat(); // エラー発生時も空の cv::Mat を返す (処理を継続するため)
-        }
-        else {
-            std::cerr << "Error: Unknown error occurred while reading the file." << std::endl;
-            return cv::Mat(); // エラー発生時も空の cv::Mat を返す (処理を継続するため)
-        }
-        // throw std::runtime_error("Failed to read frame data"); // 例外throwは削除
-        return cv::Mat(); // エラー発生時も空の cv::Mat を返す (処理を継続するため)
-    }
-
-    std::memcpy(frame.data, buffer.data(), frame_size);
-    return frame;
+    int size_needed = WideCharToMultiByte(CP_UTF8, 0, wstr.c_str(), static_cast<int>(wstr.size()),
+        nullptr, 0, nullptr, nullptr);
+    std::string strTo(size_needed, 0);
+    WideCharToMultiByte(CP_UTF8, 0, wstr.c_str(), static_cast<int>(wstr.size()),
+        &strTo[0], size_needed, nullptr, nullptr);
+    return strTo;
 }
 
-void run_ffmpeg(const char* cmd, const char* mode, std::function<void(FILE*)> func) {
-    FILE* pipe = _popen(cmd, mode);
-    if (!pipe) {
-        std::cerr << "Failed to run ffmpeg command" << std::endl;
-        return;
+// 名前を変更して、DLL のパスを取得する関数
+std::string GetMyDllDirectory() {
+    wchar_t buffer[MAX_PATH] = { 0 };
+    HMODULE hModule = nullptr;
+
+    if (GetModuleHandleExW(
+        GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+        reinterpret_cast<LPCWSTR>(&GetMyDllDirectory),
+        &hModule))
+    {
+        GetModuleFileNameW(hModule, buffer, MAX_PATH);
+        std::wstring wFullPath(buffer);
+        std::string fullPath = WideStringToString(wFullPath);
+        size_t pos = fullPath.find_last_of("\\/");
+        if (pos != std::string::npos) {
+            return fullPath.substr(0, pos);
+        }
     }
-    func(pipe);
-    _pclose(pipe);
+    return "";
 }
 
 //DirectMLを使用した物体検出処理
 extern "C" __declspec(dllexport) MY_API int dml_main(char* input_video_path, char* output_video_path, char* codec, char* hwaccel, int width, int height, int fps,char* color_primaries,  RectInfo* rects, int count, ColorInfo name_color, ColorInfo fixframe_color, bool inpaint, bool copyright, bool no_inference)
 {
-    const char* model_path = "./my_yolov8m.onnx";
+    const char* model_path = "my_yolov8m.onnx";
 
     YOLOv8Detector detector;
 
@@ -516,21 +725,26 @@ extern "C" __declspec(dllexport) MY_API int dml_main(char* input_video_path, cha
         std::cerr << "Failed to load model." << std::endl;
         return -1;
     }
-
+    // DLLのディレクトリを取得
+    std::string dllPath = GetMyDllDirectory();
+    // ffmpeg.exe のフルパスを構築
+    std::string ffmpegPath = dllPath + "\\ffmpeg-master-latest-win64-lgpl\\bin\\ffmpeg.exe";
+    // パス全体をダブルクォーテーションで囲む
+    std::string quotedFfmpegExePath = "\"" + ffmpegPath + "\"";
     
     std::string ffmpeg_input_cmd;
     if (std::string(color_primaries) !="bt709") {
-        ffmpeg_input_cmd = ".\\ffmpeg-master-latest-win64-lgpl\\bin\\ffmpeg.exe -loglevel quiet -hwaccel " + std::string(hwaccel) + " -i \"" + std::string(input_video_path) + "\" " +
+        ffmpeg_input_cmd = std::string(quotedFfmpegExePath) +" -loglevel quiet -hwaccel " + std::string(hwaccel) + " -i \"" + std::string(input_video_path) + "\" " +
             "-vf \"zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv\" " +
             "-f image2pipe -vcodec rawvideo -pix_fmt bgr24 -";
     }
     else {
-        ffmpeg_input_cmd = ".\\ffmpeg-master-latest-win64-lgpl\\bin\\ffmpeg.exe -loglevel quiet -hwaccel " + std::string(hwaccel) + " -i \"" + std::string(input_video_path) + "\" " +
+        ffmpeg_input_cmd = std::string(quotedFfmpegExePath) + " -loglevel quiet -hwaccel " + std::string(hwaccel) + " -i \"" + std::string(input_video_path) + "\" " +
             "-f image2pipe -vcodec rawvideo -pix_fmt bgr24 -";
     }
 
-    std::string ffmpeg_output_cmd = ".\\ffmpeg-master-latest-win64-lgpl\\bin\\ffmpeg.exe -loglevel quiet -y -f rawvideo -pix_fmt bgr24 -s " + std::to_string(width) + "x" + std::to_string(height) +
-        " -r " + std::to_string(fps) + " -i - -movflags faststart -pix_fmt yuv420p -vcodec " + std::string(codec) +
+    std::string ffmpeg_output_cmd = std::string(quotedFfmpegExePath) + " -loglevel quiet -y -f rawvideo -pix_fmt bgr24 -s " + std::to_string(width) + "x" + std::to_string(height) +
+        " -r " + std::to_string(fps) + " -i pipe:0 -movflags faststart -pix_fmt yuv420p -vcodec " + std::string(codec) +
         " -b:v 11M -preset slow \"" + std::string(output_video_path) + "\"";
 
     cv::Mat current_frame;
@@ -544,60 +758,71 @@ extern "C" __declspec(dllexport) MY_API int dml_main(char* input_video_path, cha
     bool finished_reading = false;
     const int max_queue_size = 100; // 適宜設定
 
-    // 読み取りスレッド
-    auto read_thread = std::thread([&]() {
-        run_ffmpeg(ffmpeg_input_cmd.c_str(), "rb", [&](FILE* input_pipe) {
+     // 読み取りスレッド：ffmpeg_input の出力（raw video）を読み込む
+    std::thread read_thread([&]() {
+        run_ffmpeg_input(ffmpeg_input_cmd, [&](HANDLE input_pipe) {
             while (true) {
-                current_frame = read_frame(input_pipe, width, height);
-                if (current_frame.empty()) {
+                cv::Mat frame = ReadFrameFromPipe(input_pipe, width, height);
+                if (frame.empty()) {
                     break;
                 }
                 {
                     std::unique_lock<std::mutex> lock(queue_mutex);
+                    std::cerr << "Write thread loop check: frame_queue.size() = " << frame_queue.size()
+                        << ", finished_reading = " << finished_reading << std::endl;
                     queue_cv.wait(lock, [&]() { return frame_queue.size() < max_queue_size; });
-                    frame_queue.push(current_frame);
+                    frame_queue.push(frame);
                 }
                 queue_cv.notify_one();
             }
+            // ここでパイプを閉じることで、ffmpeg に EOF を通知する
+            std::cerr << "Read thread: closing input pipe handle to signal EOF to ffmpeg." << std::endl;
+            CloseHandle(input_pipe);
             {
                 std::lock_guard<std::mutex> lock(queue_mutex);
                 finished_reading = true;
             }
-            queue_cv.notify_one();
+            queue_cv.notify_all();
             });
         });
 
-    auto write_thread = std::thread([&]() {
-        run_ffmpeg(ffmpeg_output_cmd.c_str(), "wb", [&](FILE* output_pipe) {
-            if (!output_pipe) {
-                std::cerr << "Error: output_pipe is nullptr in write_thread" << std::endl;
-                return;
-            }
+    // 書き込みスレッド：ffmpeg_output の入力側へ処理済みフレームを書き込む
+    std::thread write_thread([&]() {
+        run_ffmpeg_output(ffmpeg_output_cmd, [&](HANDLE output_pipe) {
             while (true) {
                 cv::Mat processed_frame;
                 {
                     std::unique_lock<std::mutex> lock(queue_mutex);
-                    queue_cv.wait(lock, [&]() { return !frame_queue.empty() || finished_reading; });
-
-                    if (frame_queue.empty() && finished_reading) {
+                    // 1秒間待っても返事がなければタイムアウトとする
+                    if (!queue_cv.wait_for(lock, std::chrono::seconds(1), [&]() {
+                        return !frame_queue.empty() || finished_reading;
+                        })) {
+                        std::cerr << "Write thread: wait_for timed out (no data for 1 second)." << std::endl;
                         break;
                     }
-
-                    processed_frame = frame_queue.front();
-                    frame_queue.pop();
+                    if (frame_queue.empty() && finished_reading) {
+                        std::cerr << "Exit write loop: frame queue empty and finished_reading is true." << std::endl;
+                        break;
+                    }
+                    if (!frame_queue.empty()) {
+                        processed_frame = frame_queue.front();
+                        frame_queue.pop();
+                    }
                 }
                 queue_cv.notify_one();
-
                 if (!processed_frame.empty()) {
-                    dml_process_frame(processed_frame, processed_frame, detector, rects, count, name_color, fixframe_color, inpaint, copyright, no_inference);
+                    // ここで物体検出などの処理を実施
+                    dml_process_frame(processed_frame, processed_frame, detector, rects, count,
+                        name_color, fixframe_color, inpaint, copyright, no_inference);
                     total_frame_count += 1;
-                    write_frame(output_pipe, processed_frame);
+                    WriteFrameToPipe(output_pipe, processed_frame);
                 }
             }
-
             queue_cv.notify_one();
-            });
+            std::cerr << "Write thread: closing output pipe handle to signal EOF to ffmpeg." << std::endl;
+            CloseHandle(output_pipe);
         });
+    });
 
     read_thread.join();
     write_thread.join();
@@ -752,7 +977,6 @@ void postprocess(float* rst, int batch_size, std::vector<cv::Mat>& images, std::
             {
 
                 for (int i = 0; i < indices.size(); i++) {
-                    //cv::rectangle(images[b], boxes[indices[i]], cv::Scalar(0, 0, 0), -1, cv::LINE_8, 0);
                     cv::rectangle(images[b], boxes[indices[i]], name_color_Scalar, -1);
                 }
             }
@@ -846,19 +1070,27 @@ extern "C" __declspec(dllexport) MY_API int trt_main(char* input_video_path, cha
     cudaStreamCreate(&stream);
 
 
+    // DLLのディレクトリを取得
+    std::string dllPath = GetMyDllDirectory();
+    // ffmpeg.exe のフルパスを構築
+    std::string ffmpegPath = dllPath + "\\ffmpeg-master-latest-win64-lgpl\\bin\\ffmpeg.exe";
+    // パス全体をダブルクォーテーションで囲む
+    std::string quotedFfmpegExePath = "\"" + ffmpegPath + "\"";
+
     std::string ffmpeg_input_cmd;
     if (std::string(color_primaries) != "bt709") {
-        ffmpeg_input_cmd = ".\\ffmpeg-master-latest-win64-lgpl\\bin\\ffmpeg.exe -loglevel quiet -hwaccel " + std::string(hwaccel) + " -i \"" + std::string(input_video_path) + "\" " +
+        ffmpeg_input_cmd = std::string(quotedFfmpegExePath) + " -loglevel quiet -hwaccel " + std::string(hwaccel) + " -i \"" + std::string(input_video_path) + "\" " +
             "-vf \"zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv\" " +
             "-f image2pipe -vcodec rawvideo -pix_fmt bgr24 -";
     }
     else {
-        ffmpeg_input_cmd = ".\\ffmpeg-master-latest-win64-lgpl\\bin\\ffmpeg.exe -loglevel quiet -hwaccel " + std::string(hwaccel) + " -i \"" + std::string(input_video_path) + "\" " +
+
+        ffmpeg_input_cmd = std::string(quotedFfmpegExePath) + " -loglevel quiet -hwaccel " + std::string(hwaccel) + " -i \"" + std::string(input_video_path) + "\" " +
             "-f image2pipe -vcodec rawvideo -pix_fmt bgr24 -";
     }
 
-    std::string ffmpeg_output_cmd = ".\\ffmpeg-master-latest-win64-lgpl\\bin\\ffmpeg.exe -loglevel quiet -y -f rawvideo -pix_fmt bgr24 -s " + std::to_string(width) + "x" + std::to_string(height) +
-        " -r " + std::to_string(fps) + " -i - -movflags faststart -pix_fmt yuv420p -vcodec " + std::string(codec) +
+    std::string ffmpeg_output_cmd = std::string(quotedFfmpegExePath) + " -loglevel quiet -y -f rawvideo -pix_fmt bgr24 -s " + std::to_string(width) + "x" + std::to_string(height) +
+        " -r " + std::to_string(fps) + " -i pipe:0 -movflags faststart -pix_fmt yuv420p -vcodec " + std::string(codec) +
         " -b:v 11M -preset slow \"" + std::string(output_video_path) + "\"";
 
     cv::Mat current_frame;
@@ -875,37 +1107,52 @@ extern "C" __declspec(dllexport) MY_API int trt_main(char* input_video_path, cha
 
 
 
-    auto read_thread = std::thread([&]() {
-        run_ffmpeg(ffmpeg_input_cmd.c_str(), "rb", [&](FILE* input_pipe) {
+    // 読み取りスレッド：ffmpeg_input の出力（raw video）を読み込む
+    std::thread read_thread([&]() {
+        run_ffmpeg_input(ffmpeg_input_cmd, [&](HANDLE input_pipe) {
             while (true) {
-                current_frame = read_frame(input_pipe, width, height);
-                if (current_frame.empty()) {
+                cv::Mat frame = ReadFrameFromPipe(input_pipe, width, height);
+                if (frame.empty()) {
                     break;
                 }
                 {
                     std::unique_lock<std::mutex> lock(queue_mutex);
+                    std::cerr << "Write thread loop check: frame_queue.size() = " << frame_queue.size()
+                        << ", finished_reading = " << finished_reading << std::endl;
                     queue_cv.wait(lock, [&]() { return frame_queue.size() < max_queue_size; });
-                    frame_queue.push(current_frame);
+                    frame_queue.push(frame);
                 }
                 queue_cv.notify_one();
             }
+            // ここでパイプを閉じることで、ffmpeg に EOF を通知する
+            std::cerr << "Read thread: closing input pipe handle to signal EOF to ffmpeg." << std::endl;
+            CloseHandle(input_pipe);
             {
                 std::lock_guard<std::mutex> lock(queue_mutex);
                 finished_reading = true;
             }
-            queue_cv.notify_one();
-            });
+            queue_cv.notify_all();
         });
+    });
 
-    auto write_thread = std::thread([&]() {
-        run_ffmpeg(ffmpeg_output_cmd.c_str(), "wb", [&](FILE* output_pipe) {
+
+    // 書き込みスレッド：ffmpeg_output の入力側へ処理済みフレームを書き込む
+    std::thread write_thread([&]() {
+        run_ffmpeg_output(ffmpeg_output_cmd, [&](HANDLE output_pipe) {
             while (true) {
                 std::vector<cv::Mat> frames;
                 std::vector<cv::Vec4d> params;
                 {
                     std::unique_lock<std::mutex> lock(queue_mutex);
-                    queue_cv.wait(lock, [&]() { return frame_queue.size() >= batch_size || (finished_reading && !frame_queue.empty()); });
+                    // 1秒間待ってもデータがなければタイムアウトとして終了する
+                    if (!queue_cv.wait_for(lock, std::chrono::seconds(1), [&]() {
+                        return !frame_queue.empty() || finished_reading;
+                        })) {
+                        std::cerr << "Write thread: wait_for timed out (no data for 1 second)." << std::endl;
+                        break;
+                    }
                     if (frame_queue.empty() && finished_reading) {
+                        std::cerr << "Exit write loop: frame queue empty and finished_reading is true." << std::endl;
                         break;
                     }
                     while (!frame_queue.empty() && frames.size() < batch_size) {
@@ -914,11 +1161,10 @@ extern "C" __declspec(dllexport) MY_API int trt_main(char* input_video_path, cha
                     }
                 }
                 if (frames.empty()) {
+                    std::cerr << "No frames to process, exiting write loop." << std::endl;
                     break;
                 }
-                if (frame_queue.empty() && finished_reading) {
-                    break;
-                }
+
                 std::vector<cv::Mat> blobs;
                 for (auto& frame : frames) {
                     cv::Mat LetterBoxImg;
@@ -940,16 +1186,20 @@ extern "C" __declspec(dllexport) MY_API int trt_main(char* input_video_path, cha
 
                 cudaMemcpyAsync(rst, buffers[outputIndex], batch_size * 5 * 33600 * sizeof(float), cudaMemcpyDeviceToHost, stream);
 
-                postprocess(rst, frames.size(), frames, params,  rects, count, name_color, fixframe_color, inpaint, copyright, no_inference);
+                postprocess(rst, frames.size(), frames, params, rects, count, name_color, fixframe_color, inpaint, copyright, no_inference);
                 for (auto& frame : frames) {
-                    write_frame(output_pipe, frame);
+                    WriteFrameToPipe(output_pipe, frame);
                 }
 
                 total_frame_count += frames.size();
                 queue_cv.notify_one();
             }
+            queue_cv.notify_one();
+            std::cerr << "Write thread: closing output pipe handle to signal EOF to ffmpeg." << std::endl;
+            CloseHandle(output_pipe);
             });
         });
+
 
     read_thread.join();
     write_thread.join();
