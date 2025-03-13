@@ -197,7 +197,7 @@ std::optional<std::vector<YOLOv8Detector::BoundingBox>> YOLOv8Detector::inferenc
     const int N = 1; // batch size
     const int C = 3; // number of channels
     const int W = 1280; // width
-    const int H = 1280; // height
+    const int H = 736; // height
 
     std::vector<float> input_tensor_values(N * C * H * W);
 
@@ -317,7 +317,7 @@ extern "C" __declspec(dllexport) MY_API int preview_api(const char* image_path, 
 {
 	std::string imagePathStr(image_path);
     // モデルファイルのパス
-    const char* model_path = "./my_yolov8m.onnx";
+    const char* model_path = "./my_yolov8m_s.onnx";
 
     // OpenCV の色を作成
     cv::Scalar name_color_Scalar(name_color.b, name_color.g, name_color.r);
@@ -344,8 +344,8 @@ extern "C" __declspec(dllexport) MY_API int preview_api(const char* image_path, 
     if (no_inference==true)
 	{
 		// 画像の前処理
-		detector.PreProcess(image, 1280, o_image);
-         //detector.PreProcess2(image, 1280, 736, o_image);
+		//detector.PreProcess(image, 1280, o_image);
+        detector.PreProcess2(image, 1280, 736, o_image);
 		// 物体検出
 		auto result = detector.inference(o_image);
 		if (result) {
@@ -616,8 +616,8 @@ void dml_process_frame(const cv::Mat& in_frame, cv::Mat& out_frame, YOLOv8Detect
         cv::Scalar name_color_Scalar(name_color.b, name_color.g, name_color.r);
 
         cv::Mat processed_frame;
-        detector.PreProcess(const_cast<cv::Mat&>(in_frame), in_frame.cols, processed_frame);
-        //detector.PreProcess2(const_cast<cv::Mat&>(in_frame), 1280, 736, processed_frame);
+        //detector.PreProcess(const_cast<cv::Mat&>(in_frame), in_frame.cols, processed_frame);
+        detector.PreProcess2(const_cast<cv::Mat&>(in_frame), 1280, 736, processed_frame);
 
         auto result = detector.inference(processed_frame);
 
@@ -716,7 +716,7 @@ std::string GetMyDllDirectory() {
 //DirectMLを使用した物体検出処理
 extern "C" __declspec(dllexport) MY_API int dml_main(char* input_video_path, char* output_video_path, char* codec, char* hwaccel, int width, int height, int fps,char* color_primaries,  RectInfo* rects, int count, ColorInfo name_color, ColorInfo fixframe_color, bool inpaint, bool copyright, bool no_inference)
 {
-    const char* model_path = "my_yolov8m.onnx";
+    const char* model_path = "my_yolov8m_s.onnx";
 
     YOLOv8Detector detector;
 
@@ -848,7 +848,7 @@ std::vector<unsigned char> load_engine_file(const std::string& file_name)
 
 void LetterBox(const cv::Mat& image, cv::Mat& outImage,
     cv::Vec4d& params, //[ratio_x,ratio_y,dw,dh]
-    const cv::Size& newShape = cv::Size(1280, 1280),
+    const cv::Size& newShape = cv::Size(1280, 736),
     bool autoShape = false,
     bool scaleFill = false,
     bool scaleUp = true,
@@ -929,20 +929,20 @@ void postprocess(float* rst, int batch_size, std::vector<cv::Mat>& images, std::
             static const float nms_threshold = 0.5;
             std::vector<int> indices;
 
-            for (int Anchors = 0; Anchors < 33600; Anchors++)
+            for (int Anchors = 0; Anchors < 19320; Anchors++)
             {
                 float max_score = 0.0;
                 int max_score_det = 99;
                 float pdata[4];
                 int prob = 4;
                 {
-                    if (rst[b * 5 * 33600 + prob * 33600 + Anchors] > max_score) {
-                        max_score = rst[b * 5 * 33600 + prob * 33600 + Anchors];
+                    if (rst[b * 5 * 19320 + prob * 19320 + Anchors] > max_score) {
+                        max_score = rst[b * 5 * 19320 + prob * 19320 + Anchors];
                         max_score_det = prob - 4;
-                        pdata[0] = rst[b * 5 * 33600 + 0 * 33600 + Anchors];
-                        pdata[1] = rst[b * 5 * 33600 + 1 * 33600 + Anchors];
-                        pdata[2] = rst[b * 5 * 33600 + 2 * 33600 + Anchors];
-                        pdata[3] = rst[b * 5 * 33600 + 3 * 33600 + Anchors];
+                        pdata[0] = rst[b * 5 * 19320 + 0 * 19320 + Anchors];
+                        pdata[1] = rst[b * 5 * 19320 + 1 * 19320 + Anchors];
+                        pdata[2] = rst[b * 5 * 19320 + 2 * 19320 + Anchors];
+                        pdata[3] = rst[b * 5 * 19320 + 3 * 19320 + Anchors];
                     }
                 }
                 if (max_score >= score_threshold)
@@ -1033,7 +1033,7 @@ extern "C" __declspec(dllexport) MY_API int trt_main(char* input_video_path, cha
 
     // アプリケーション専用のフォルダパスを組み立てる
     std::wstring appFolderPath = std::wstring(localAppDataPath) + std::wstring{ L"\\WoLNamesBlackedOut" };
-    std::wstring engineFilePath = appFolderPath + std::wstring{ L"\\my_yolov8m.engine" };
+    std::wstring engineFilePath = appFolderPath + std::wstring{ L"\\my_yolov8m_s.engine" };
 
     std::string engineFilePathStr(engineFilePath.length(), 0);
     std::transform(engineFilePath.begin(), engineFilePath.end(), engineFilePathStr.begin(), [](wchar_t c) {
@@ -1097,7 +1097,7 @@ extern "C" __declspec(dllexport) MY_API int trt_main(char* input_video_path, cha
     cv::Mat processed_frame;
     total_frame_count = 0;
 
-    float* rst = new float[batch_size * 5 * 33600];
+    float* rst = new float[batch_size * 5 * 19320];
 
     std::queue<cv::Mat> frame_queue;
     std::mutex queue_mutex;
@@ -1169,22 +1169,22 @@ extern "C" __declspec(dllexport) MY_API int trt_main(char* input_video_path, cha
                 for (auto& frame : frames) {
                     cv::Mat LetterBoxImg;
                     cv::Vec4d param;
-                    LetterBox(frame, LetterBoxImg, param, cv::Size(1280, 1280));
+                    LetterBox(frame, LetterBoxImg, param, cv::Size(1280, 736));
                     params.push_back(param);
 
                     cv::Mat blob;
-                    cv::dnn::blobFromImage(LetterBoxImg, blob, 1 / 255.0, cv::Size(1280, 1280), cv::Scalar(0, 0, 0), true, false, CV_32F);
+                    cv::dnn::blobFromImage(LetterBoxImg, blob, 1 / 255.0, cv::Size(1280, 736), cv::Scalar(0, 0, 0), true, false, CV_32F);
                     blobs.push_back(blob);
                 }
 
                 for (int i = 0; i < blobs.size(); ++i) {
-                    cudaMemcpyAsync(static_cast<float*>(buffers[inputIndex]) + i * 3 * 1280 * 1280, blobs[i].data, 3 * 1280 * 1280 * sizeof(float), cudaMemcpyHostToDevice, stream);
+                    cudaMemcpyAsync(static_cast<float*>(buffers[inputIndex]) + i * 3 * 1280 * 736, blobs[i].data, 3 * 1280 * 736 * sizeof(float), cudaMemcpyHostToDevice, stream);
                 }
                 context->setOptimizationProfileAsync(0, stream);
                 context->enqueueV3(stream);
                 cudaStreamSynchronize(stream);
 
-                cudaMemcpyAsync(rst, buffers[outputIndex], batch_size * 5 * 33600 * sizeof(float), cudaMemcpyDeviceToHost, stream);
+                cudaMemcpyAsync(rst, buffers[outputIndex], batch_size * 5 * 19320 * sizeof(float), cudaMemcpyDeviceToHost, stream);
 
                 postprocess(rst, frames.size(), frames, params, rects, count, name_color, fixframe_color, inpaint, copyright, no_inference);
                 for (auto& frame : frames) {
