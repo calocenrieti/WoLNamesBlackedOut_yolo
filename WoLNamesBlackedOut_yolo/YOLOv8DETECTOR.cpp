@@ -35,7 +35,6 @@ public:
     operator bool() const;
     bool loadModel(const char* model_path);
     std::optional<std::vector<BoundingBox>> inference(const cv::Mat& image);
-    bool PreProcess(cv::Mat& iImg, int iImgSize, cv::Mat& oImg);
     bool PreProcess2(cv::Mat& iImg, int targetWidth, int targetHeight, cv::Mat& oImg);
     float resizeScales;
 };
@@ -131,31 +130,6 @@ bool YOLOv8Detector::loadModel(const char* model_path)
     return false;
 }
 
-
-
-
-bool YOLOv8Detector::PreProcess(cv::Mat& iImg, int iImgSize, cv::Mat& oImg)
-{
-    oImg = iImg.clone();
-    
-    if (iImg.cols >= iImg.rows)
-    {
-        resizeScales = iImg.cols / (float)iImgSize;
-        cv::resize(oImg, oImg, cv::Size(iImgSize, int(iImg.rows / resizeScales)));
-    }
-    else
-    {
-        resizeScales = iImg.rows / (float)iImgSize;
-        cv::resize(oImg, oImg, cv::Size(int(iImg.cols / resizeScales), iImgSize));
-    }
-    cv::Mat tempImg = cv::Mat::zeros(iImgSize, iImgSize, CV_8UC3);
-    oImg.copyTo(tempImg(cv::Rect(0, 0, oImg.cols, oImg.rows)));
-    oImg = tempImg;
-    
-    //cv::cvtColor(oImg, oImg, cv::COLOR_BGR2RGB);
-    return true;
-}
-
 bool YOLOv8Detector::PreProcess2(cv::Mat& iImg, int targetWidth, int targetHeight, cv::Mat& oImg)
 {
     // 入力画像のコピーを作成
@@ -171,13 +145,13 @@ bool YOLOv8Detector::PreProcess2(cv::Mat& iImg, int targetWidth, int targetHeigh
         // 横幅をtargetWidthに合わせるのでスケールは入力横幅 / targetWidth
         resizeScales = iImg.cols / static_cast<float>(targetWidth);
         // 高さは元サイズから同じスケールで調整
-        cv::resize(oImg, oImg, cv::Size(targetWidth, static_cast<int>(iImg.rows / resizeScales)));
+        cv::resize(oImg, oImg, cv::Size(targetWidth, static_cast<int>(iImg.rows / resizeScales)), 0, 0, cv::INTER_LINEAR);
     }
     // 縦長の場合：縦幅基準でリサイズ
     else {
         // 縦幅をtargetHeightに合わせるのでスケールは入力縦幅 / targetHeight
         resizeScales = iImg.rows / static_cast<float>(targetHeight);
-        cv::resize(oImg, oImg, cv::Size(static_cast<int>(iImg.cols / resizeScales), targetHeight));
+        cv::resize(oImg, oImg, cv::Size(static_cast<int>(iImg.cols / resizeScales), targetHeight), 0, 0, cv::INTER_LINEAR);
     }
 
     // 出力テンソル（背景は0で埋める＝黒）の作成
@@ -202,8 +176,7 @@ std::optional<std::vector<YOLOv8Detector::BoundingBox>> YOLOv8Detector::inferenc
     std::vector<float> input_tensor_values(N * C * H * W);
 
     cv::Mat resized_img;
-    cv::resize(image, resized_img, cv::Size(W, H), 0, 0, cv::INTER_LINEAR);
-    resized_img.convertTo(resized_img, CV_32F, 1.0 / 255.0); // 正規化
+    image.convertTo(resized_img, CV_32F, 1.0 / 255.0); // 正規化
 
     float* R = input_tensor_values.data() + H * W * 0;
     float* G = input_tensor_values.data() + H * W * 1;
