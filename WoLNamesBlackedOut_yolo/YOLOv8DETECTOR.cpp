@@ -285,8 +285,32 @@ cv::Mat put_C_SQUARE_ENIX(cv::Mat img, cv::Mat c_sqex_image, int w, int h)
     return img;
 }
 
+// モザイク処理
+// ROI領域内のピクセルを縮小して再拡大することでピクセル化を実現
+void applyMosaic(cv::Mat& frame, const cv::Rect& roiRect, int mosaicFactor = 10) {
+    // roiRect の範囲が画像サイズ内か確認するのが望ましい
+    cv::Mat roi = frame(roiRect);
+    cv::Mat small;
+    // 小さいサイズにリサイズ（縮小）
+    cv::resize(roi, small, cv::Size(roi.cols / mosaicFactor, roi.rows / mosaicFactor), 0, 0, cv::INTER_LINEAR);
+    // 元の大きさに補完なしで拡大（ピクセル化を強調）
+    cv::resize(small, roi, cv::Size(roi.cols, roi.rows), 0, 0, cv::INTER_NEAREST);
+}
+
+// ブラー処理（ガウシアンブラー）
+// ROI の範囲内に対して、指定のカーネルサイズでぼかし処理を行う
+void applyBlur(cv::Mat& frame, const cv::Rect& roiRect, int kernelSize = 15) {
+    // カーネルサイズは奇数でなければならない
+    if (kernelSize % 2 == 0) {
+        kernelSize++;
+    }
+    cv::Mat roi = frame(roiRect);
+    cv::GaussianBlur(roi, roi, cv::Size(kernelSize, kernelSize), 0);
+}
+
 // preview_api関数を宣言
-extern "C" __declspec(dllexport) MY_API int preview_api(const char* image_path,  RectInfo* rects, int count, ColorInfo name_color, ColorInfo fixframe_color,bool inpaint,bool copyright, bool no_inference)
+//extern "C" __declspec(dllexport) MY_API int preview_api(const char* image_path,  RectInfo* rects, int count, ColorInfo name_color, ColorInfo fixframe_color,bool inpaint,bool copyright, bool no_inference)
+extern "C" __declspec(dllexport) MY_API int preview_api(const char* image_path, RectInfo* rects, int count, ColorInfo name_color, ColorInfo fixframe_color, bool copyright, char* blacked_type, char* fixframe_type, int blacked_param, int fixframe_param)
 {
 	std::string imagePathStr(image_path);
     // モデルファイルのパス
@@ -314,7 +338,8 @@ extern "C" __declspec(dllexport) MY_API int preview_api(const char* image_path, 
     //cv::Mat o_image = image.clone();
     cv::Mat o_image;
 
-    if (no_inference==true)
+    //if (no_inference==true)
+    if (strcmp(blacked_type, "No_Inference") != 0)
 	{
 		// 画像の前処理
 		//detector.PreProcess(image, 1280, o_image);
@@ -335,7 +360,8 @@ extern "C" __declspec(dllexport) MY_API int preview_api(const char* image_path, 
             float scoreThreshold = 0.01f; // スコアのしきい値（適宜変更）
             float nmsThreshold = 0.5f;   // NMS のしきい値（適宜変更）
             cv::dnn::NMSBoxes(boxes, scores, scoreThreshold, nmsThreshold, indices);
-			if (inpaint == true)
+			//if (inpaint == true)
+            if (strcmp(blacked_type, "Inpaint") == 0)
 			{
                 cv::Mat mask_frame = cv::Mat::zeros(image.size(), CV_8UC1);
 
@@ -349,6 +375,21 @@ extern "C" __declspec(dllexport) MY_API int preview_api(const char* image_path, 
                 image = inpainted_image;
 
 			}
+            else if (strcmp(blacked_type, "Mosaic") == 0)
+            {
+                // モザイク処理を適用
+                for (const auto& i : indices) {
+                    // 画像サイズなどに十分余裕があるか確認したほうがよい
+                    applyMosaic(image, boxes[i], 10 / blacked_param); // mosaicFactor は適宜調整
+                }
+            }
+            else if (strcmp(blacked_type, "Blur") == 0)
+            {
+                // ブラー処理を適用
+                for (const auto& i : indices) {
+                    applyBlur(image, boxes[i], 5 * blacked_param); // カーネルサイズは適宜調整
+                }
+            }
 			else
 			{
                 // 検出結果をBBOXで描画
@@ -363,7 +404,18 @@ extern "C" __declspec(dllexport) MY_API int preview_api(const char* image_path, 
     for (int i = 0; i < count; i++)
     {
         cv::Rect rect(rects[i].x, rects[i].y, rects[i].width, rects[i].height);
-        cv::rectangle(image, rect, fixframe_Scalar, -1);
+        if (strcmp(fixframe_type, "Mosaic") == 0) {
+            // モザイク処理を適用
+            applyMosaic(image, rect, 10 / fixframe_param); // fixframe_param -> mosaicFactor
+        }
+        else if (strcmp(fixframe_type, "Blur") == 0) {
+            // ブラー処理を適用
+            applyBlur(image, rect, 5 * fixframe_param); // fixframe_param -> kernelSize
+        }
+        else {
+            // 単色で塗りつぶし
+            cv::rectangle(image, rect, fixframe_Scalar, -1);
+        }
     }
 
 	if (copyright == true)
@@ -575,8 +627,8 @@ void run_ffmpeg_output(const std::string& cmd, std::function<void(HANDLE)> func)
     CloseHandle(pi.hThread);
 }
 
-
-void dml_process_frame(const cv::Mat& in_frame, cv::Mat& out_frame, YOLOv8Detector& detector, RectInfo* rects, int count, ColorInfo name_color, ColorInfo fixframe_color, bool inpaint, bool copyright, bool no_inference)
+//void dml_process_frame(const cv::Mat& in_frame, cv::Mat& out_frame, YOLOv8Detector& detector, RectInfo* rects, int count, ColorInfo name_color, ColorInfo fixframe_color, bool inpaint, bool copyright, bool no_inference)
+void dml_process_frame(const cv::Mat& in_frame, cv::Mat& out_frame, YOLOv8Detector& detector, RectInfo* rects, int count, ColorInfo name_color, ColorInfo fixframe_color, bool copyright, char* blacked_type, char* fixframe_type, int blacked_param, int fixframe_param)
 {
     // OpenCV の色を作成
     cv::Scalar fixframe_Scalar(fixframe_color.b, fixframe_color.g, fixframe_color.r);
@@ -584,7 +636,8 @@ void dml_process_frame(const cv::Mat& in_frame, cv::Mat& out_frame, YOLOv8Detect
 
     std::cerr << "dml_process_frame: Start processing frame" << std::endl;
 
-    if (no_inference == true)
+    //if (no_inference == true)
+    if (strcmp(blacked_type , "No_Inference") != 0)
     {
         cv::Scalar name_color_Scalar(name_color.b, name_color.g, name_color.r);
 
@@ -608,7 +661,8 @@ void dml_process_frame(const cv::Mat& in_frame, cv::Mat& out_frame, YOLOv8Detect
             float scoreThreshold = 0.01f; // スコアのしきい値（適宜変更）
             float nmsThreshold = 0.5f;   // NMS のしきい値（適宜変更）
             cv::dnn::NMSBoxes(boxes, scores, scoreThreshold, nmsThreshold, indices);
-            if (inpaint == true)
+            //if (inpaint == true)
+            if (strcmp(blacked_type, "Inpaint") == 0)
             {
                 cv::Mat mask_frame = cv::Mat::zeros(in_frame.size(), CV_8UC1);
 
@@ -619,6 +673,21 @@ void dml_process_frame(const cv::Mat& in_frame, cv::Mat& out_frame, YOLOv8Detect
                 cv::Mat inpainted_image = in_frame.clone();
                 cv::inpaint(in_frame, mask_frame, inpainted_image, 3, cv::INPAINT_TELEA);
                 out_frame = inpainted_image;
+            }
+            else if (strcmp(blacked_type, "Mosaic") == 0)
+            {
+                // モザイク処理を適用
+                for (const auto& i : indices) {
+                    // 画像サイズなどに十分余裕があるか確認したほうがよい
+                    applyMosaic(out_frame, boxes[i], 10 / blacked_param); // mosaicFactor は適宜調整
+                }
+            }
+            else if (strcmp(blacked_type, "Blur") == 0)
+            {
+                // ブラー処理を適用
+                for (const auto& i : indices) {
+                    applyBlur(out_frame, boxes[i], 5 * blacked_param); // カーネルサイズは適宜調整
+                }
             }
             else
             {
@@ -633,7 +702,20 @@ void dml_process_frame(const cv::Mat& in_frame, cv::Mat& out_frame, YOLOv8Detect
     for (int i = 0; i < count; i++)
     {
         cv::Rect rect(rects[i].x, rects[i].y, rects[i].width, rects[i].height);
-        cv::rectangle(out_frame, rect, fixframe_Scalar, -1);
+        //cv::rectangle(out_frame, rect, fixframe_Scalar, -1);
+        if (strcmp(fixframe_type, "Mosaic") == 0) {
+            // モザイク処理を適用
+            applyMosaic(out_frame, rect, 10/fixframe_param); // fixframe_param -> mosaicFactor
+        }
+        else if (strcmp(fixframe_type, "Blur") == 0) {
+            // ブラー処理を適用
+            applyBlur(out_frame, rect, 5*fixframe_param); // fixframe_param -> kernelSize
+        }
+        else {
+            // 単色で塗りつぶし
+            cv::rectangle(out_frame, rect, fixframe_Scalar, -1);
+        }
+
     }
 
     if (copyright == true)
@@ -687,7 +769,8 @@ std::string GetMyDllDirectory() {
 }
 
 //DirectMLを使用した物体検出処理
-extern "C" __declspec(dllexport) MY_API int dml_main(char* input_video_path, char* output_video_path, char* codec, char* hwaccel, int width, int height, int fps,char* color_primaries,  RectInfo* rects, int count, ColorInfo name_color, ColorInfo fixframe_color, bool inpaint, bool copyright, bool no_inference)
+//extern "C" __declspec(dllexport) MY_API int dml_main(char* input_video_path, char* output_video_path, char* codec, char* hwaccel, int width, int height, int fps,char* color_primaries,  RectInfo* rects, int count, ColorInfo name_color, ColorInfo fixframe_color, bool inpaint, bool copyright, bool no_inference)
+extern "C" __declspec(dllexport) MY_API int dml_main(char* input_video_path, char* output_video_path, char* codec, char* hwaccel, int width, int height, int fps, char* color_primaries, RectInfo* rects, int count, ColorInfo name_color, ColorInfo fixframe_color, bool copyright, char* blacked_type,char* fixframe_type,int blacked_param,int fixframe_param)
 {
     const char* model_path = "my_yolov8m_s.onnx";
 
@@ -785,8 +868,8 @@ extern "C" __declspec(dllexport) MY_API int dml_main(char* input_video_path, cha
                 queue_cv.notify_one();
                 if (!processed_frame.empty()) {
                     // ここで物体検出などの処理を実施
-                    dml_process_frame(processed_frame, processed_frame, detector, rects, count,
-                        name_color, fixframe_color, inpaint, copyright, no_inference);
+                    //dml_process_frame(processed_frame, processed_frame, detector, rects, count, name_color, fixframe_color, inpaint, copyright, no_inference);
+                    dml_process_frame(processed_frame, processed_frame, detector, rects, count, name_color, fixframe_color,copyright, blacked_type,fixframe_type,blacked_param,fixframe_param);
                     total_frame_count += 1;
                     WriteFrameToPipe(output_pipe, processed_frame);
                 }
@@ -884,14 +967,17 @@ void LetterBox(const cv::Mat& image, cv::Mat& outImage, cv::Vec4d& params, const
 }
 
 //void postprocess(float(&rst)[1][5][33600], cv::Mat& img, cv::Vec4d params);
-void postprocess(float* rst, int batch_size, std::vector<cv::Mat>& images, std::vector<cv::Vec4d>& params, RectInfo* rects, int count, ColorInfo name_color, ColorInfo fixframe_color, bool inpaint, bool copyright, bool no_inference)
+//void postprocess(float* rst, int batch_size, std::vector<cv::Mat>& images, std::vector<cv::Vec4d>& params, RectInfo* rects, int count, ColorInfo name_color, ColorInfo fixframe_color, bool inpaint, bool copyright, bool no_inference)
+void postprocess(float* rst, int batch_size, std::vector<cv::Mat>& images, std::vector<cv::Vec4d>& params, RectInfo* rects, int count, ColorInfo name_color, ColorInfo fixframe_color, bool copyright, char* blacked_type, char* fixframe_type, int blacked_param, int fixframe_param)
+//void dml_process_frame(const cv::Mat& in_frame, cv::Mat& out_frame, YOLOv8Detector& detector, RectInfo* rects, int count, ColorInfo name_color, ColorInfo fixframe_color, bool copyright, char* blacked_type, char* fixframe_type, int blacked_param, int fixframe_param)
 {
     // OpenCV の色を作成
 
     cv::Scalar fixframe_Scalar(fixframe_color.b, fixframe_color.g, fixframe_color.r);
 
     for (int b = 0; b < batch_size; ++b) {
-        if (no_inference == true)
+        //if (no_inference == true)
+        if (strcmp(blacked_type, "No_Inference") != 0)
         {
             cv::Scalar name_color_Scalar(name_color.b, name_color.g, name_color.r);
 
@@ -934,7 +1020,8 @@ void postprocess(float* rst, int batch_size, std::vector<cv::Mat>& images, std::
 
             cv::dnn::NMSBoxes(boxes, scores, score_threshold, nms_threshold, indices);
 
-            if (inpaint == true)
+            //if (inpaint == true)
+            if (strcmp(blacked_type, "Inpaint") == 0)
             {
                 cv::Mat mask_frame = cv::Mat::zeros(images[b].size(), CV_8UC1);
 
@@ -945,6 +1032,21 @@ void postprocess(float* rst, int batch_size, std::vector<cv::Mat>& images, std::
                 cv::Mat inpainted_image = images[b].clone();
                 cv::inpaint(images[b], mask_frame, inpainted_image, 3, cv::INPAINT_TELEA);
                 images[b] = inpainted_image;
+            }
+            else if (strcmp(blacked_type, "Mosaic") == 0)
+            {
+                // モザイク処理を適用
+                for (const auto& i : indices) {
+                    // 画像サイズなどに十分余裕があるか確認したほうがよい
+                    applyMosaic(images[b], boxes[i], 10 / blacked_param); // mosaicFactor は適宜調整
+                }
+            }
+            else if (strcmp(blacked_type, "Blur") == 0)
+            {
+                // ブラー処理を適用
+                for (const auto& i : indices) {
+                    applyBlur(images[b], boxes[i], 5 * blacked_param); // カーネルサイズは適宜調整
+                }
             }
             else
             {
@@ -960,7 +1062,17 @@ void postprocess(float* rst, int batch_size, std::vector<cv::Mat>& images, std::
         for (int i = 0; i < count; i++)
         {
             cv::Rect rect(rects[i].x, rects[i].y, rects[i].width, rects[i].height);
-            cv::rectangle(images[b], rect, fixframe_Scalar, -1);
+            if (strcmp(fixframe_type, "Mosaic") == 0) {
+                // モザイク処理を適用
+                applyMosaic(images[b], rect, 10 / fixframe_param); // fixframe_param -> mosaicFactor
+            }
+            else if (strcmp(fixframe_type, "Blur") == 0) {
+                // ブラー処理を適用
+                applyBlur(images[b], rect, 5 * fixframe_param); // fixframe_param -> kernelSize
+            }
+            else {
+                cv::rectangle(images[b], rect, fixframe_Scalar, -1);
+            }
         }
 
         if (copyright == true)
@@ -980,7 +1092,8 @@ void postprocess(float* rst, int batch_size, std::vector<cv::Mat>& images, std::
 }
 
 
-extern "C" __declspec(dllexport) MY_API int trt_main(char* input_video_path, char* output_video_path, char* codec, char* hwaccel, int width, int height, int fps, char* color_primaries, RectInfo* rects, int count, ColorInfo name_color, ColorInfo fixframe_color, bool inpaint, bool copyright, bool no_inference)
+//extern "C" __declspec(dllexport) MY_API int trt_main(char* input_video_path, char* output_video_path, char* codec, char* hwaccel, int width, int height, int fps, char* color_primaries, RectInfo* rects, int count, ColorInfo name_color, ColorInfo fixframe_color, bool inpaint, bool copyright, bool no_inference)
+extern "C" __declspec(dllexport) MY_API int trt_main(char* input_video_path, char* output_video_path, char* codec, char* hwaccel, int width, int height, int fps, char* color_primaries, RectInfo* rects, int count, ColorInfo name_color, ColorInfo fixframe_color, bool copyright, char* blacked_type, char* fixframe_type, int blacked_param, int fixframe_param)
 {
     using namespace winrt::Windows::Storage;
 
@@ -1159,7 +1272,8 @@ extern "C" __declspec(dllexport) MY_API int trt_main(char* input_video_path, cha
 
                 cudaMemcpyAsync(rst, buffers[outputIndex], batch_size * 5 * 19320 * sizeof(float), cudaMemcpyDeviceToHost, stream);
 
-                postprocess(rst, frames.size(), frames, params, rects, count, name_color, fixframe_color, inpaint, copyright, no_inference);
+                //postprocess(rst, frames.size(), frames, params, rects, count, name_color, fixframe_color, inpaint, copyright, no_inference);
+                postprocess(rst, frames.size(), frames, params, rects, count, name_color, fixframe_color,  copyright, blacked_type, fixframe_type, blacked_param, fixframe_param);
                 for (auto& frame : frames) {
                     WriteFrameToPipe(output_pipe, frame);
                 }
