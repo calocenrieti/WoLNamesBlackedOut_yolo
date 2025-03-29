@@ -17,6 +17,11 @@
 #define MY_API __declspec(dllimport)
 #endif
 
+// グローバル変数
+HANDLE g_ffmpegInputProcessHandle = nullptr;
+HANDLE g_ffmpegOutputProcessHandle = nullptr;
+bool cancelFlag = false;
+
 class MY_API YOLOv8Detector {
 public:
     struct BoundingBox {
@@ -290,6 +295,16 @@ cv::Mat put_C_SQUARE_ENIX(cv::Mat img, cv::Mat c_sqex_image, int w, int h)
 void applyMosaic(cv::Mat& frame, const cv::Rect& roiRect, int mosaicFactor = 10) {
     // roiRect の範囲が画像サイズ内か確認するのが望ましい
     cv::Mat roi = frame(roiRect);
+
+    // 新しいサイズを計算
+    int newWidth = roi.cols / mosaicFactor;
+    int newHeight = roi.rows / mosaicFactor;
+    if (newWidth <= 0 || newHeight <= 0) {
+        // サイズが小さすぎる場合は処理しないか、強制的に1ピクセル以上とする
+        std::cerr << "applyMosaic: ROI too small (" << roi.cols << "x" << roi.rows << ")" << std::endl;
+        return; // 処理スキップ
+    }
+
     cv::Mat small;
     // 小さいサイズにリサイズ（縮小）
     cv::resize(roi, small, cv::Size(roi.cols / mosaicFactor, roi.rows / mosaicFactor), 0, 0, cv::INTER_LINEAR);
@@ -300,16 +315,32 @@ void applyMosaic(cv::Mat& frame, const cv::Rect& roiRect, int mosaicFactor = 10)
 // ブラー処理（ガウシアンブラー）
 // ROI の範囲内に対して、指定のカーネルサイズでぼかし処理を行う
 void applyBlur(cv::Mat& frame, const cv::Rect& roiRect, int kernelSize = 15) {
+
+    cv::Mat roi = frame(roiRect);
+
+    // カーネルサイズが ROI サイズより大きくなりすぎないように制限（例: ROI 幅、高さの半分まで）
+    int maxKernelWidth = roi.cols | 1;   // 奇数にするため補正が必要なら (roi.cols > 0 ? roi.cols - (roi.cols % 2 == 0 ? 1:0) : 1) とする
+    int maxKernelHeight = roi.rows | 1;
+    if (kernelSize > maxKernelWidth || kernelSize > maxKernelHeight) {
+        kernelSize = std::min(maxKernelWidth, maxKernelHeight);
+        if (kernelSize % 2 == 0) {
+            kernelSize--;
+        }
+        if (kernelSize < 1) {
+            std::cerr << "applyBlur: ROI too small for blurring" << std::endl;
+            return;
+        }
+    }
+
     // カーネルサイズは奇数でなければならない
     if (kernelSize % 2 == 0) {
         kernelSize++;
     }
-    cv::Mat roi = frame(roiRect);
+
     cv::GaussianBlur(roi, roi, cv::Size(kernelSize, kernelSize), 0);
 }
 
 // preview_api関数を宣言
-//extern "C" __declspec(dllexport) MY_API int preview_api(const char* image_path,  RectInfo* rects, int count, ColorInfo name_color, ColorInfo fixframe_color,bool inpaint,bool copyright, bool no_inference)
 extern "C" __declspec(dllexport) MY_API int preview_api(const char* image_path, RectInfo* rects, int count, ColorInfo name_color, ColorInfo fixframe_color, bool copyright, char* blacked_type, char* fixframe_type, int blacked_param, int fixframe_param)
 {
 	std::string imagePathStr(image_path);
@@ -377,17 +408,39 @@ extern "C" __declspec(dllexport) MY_API int preview_api(const char* image_path, 
 			}
             else if (strcmp(blacked_type, "Mosaic") == 0)
             {
+                 // 画像全体の矩形を生成
+                cv::Rect shrinkImgRect(1, 1, image.cols - 2, image.rows - 2);
+
                 // モザイク処理を適用
                 for (const auto& i : indices) {
-                    // 画像サイズなどに十分余裕があるか確認したほうがよい
-                    applyMosaic(image, boxes[i], 10 / blacked_param); // mosaicFactor は適宜調整
+                    cv::Rect rect = boxes[i];
+                    // ROIと画像全体の交差部分を取得
+                    cv::Rect validRect = boxes[i] & shrinkImgRect;
+
+                    // validRectのサイズが所定の閾値以上かどうかチェックする
+                    if (validRect.width > 10 && validRect.height > 10) {  // 必要に応じて閾値を調整
+
+                        // 画像サイズなどに十分余裕があるか確認したほうがよい
+                        applyMosaic(image, validRect, 10 / blacked_param); // mosaicFactor は適宜調整
+                    }
                 }
             }
             else if (strcmp(blacked_type, "Blur") == 0)
             {
+                // 画像全体の矩形を生成
+                cv::Rect shrinkImgRect(1, 1, image.cols - 2, image.rows - 2);
+
                 // ブラー処理を適用
                 for (const auto& i : indices) {
-                    applyBlur(image, boxes[i], 5 * blacked_param); // カーネルサイズは適宜調整
+                    cv::Rect rect = boxes[i];
+                    // ROIと画像全体の交差部分を取得
+                    cv::Rect validRect = boxes[i] & shrinkImgRect;
+
+                    // validRectのサイズが所定の閾値以上かどうかチェックする
+                    if (validRect.width > 10 && validRect.height > 10) {  // 必要に応じて閾値を調整
+
+                        applyBlur(image, validRect, 5 * blacked_param); // カーネルサイズは適宜調整
+                    }
                 }
             }
 			else
@@ -405,12 +458,18 @@ extern "C" __declspec(dllexport) MY_API int preview_api(const char* image_path, 
     {
         cv::Rect rect(rects[i].x, rects[i].y, rects[i].width, rects[i].height);
         if (strcmp(fixframe_type, "Mosaic") == 0) {
-            // モザイク処理を適用
-            applyMosaic(image, rect, 10 / fixframe_param); // fixframe_param -> mosaicFactor
+            // rectのサイズが所定の閾値以上かどうかチェックする
+            if (rect.width > 10 && rect.height > 10) {  // 必要に応じて閾値を調整
+                // モザイク処理を適用
+                applyMosaic(image, rect, 10 / fixframe_param); // fixframe_param -> mosaicFactor
+            }
         }
         else if (strcmp(fixframe_type, "Blur") == 0) {
-            // ブラー処理を適用
-            applyBlur(image, rect, 5 * fixframe_param); // fixframe_param -> kernelSize
+            // rectのサイズが所定の閾値以上かどうかチェックする
+            if (rect.width > 10 && rect.height > 10) {  // 必要に応じて閾値を調整
+                // ブラー処理を適用
+                applyBlur(image, rect, 5 * fixframe_param); // fixframe_param -> kernelSize
+            }
         }
         else {
             // 単色で塗りつぶし
@@ -590,6 +649,14 @@ void WriteFrameToPipe(HANDLE hPipe, const cv::Mat& frame) {
     }
 }
 
+inline void SafeCloseHandle(HANDLE& h)
+{
+    if (h && h != INVALID_HANDLE_VALUE ) {
+        CloseHandle(h);
+        h = nullptr;
+    }
+}
+
 // _popen を使わずに、ffmpeg プロセスを起動しリダイレクトされたパイプ (ハンドル) を渡すユーティリティ関数群
 void run_ffmpeg_input(const std::string& cmd, std::function<void(HANDLE)> func) {
     PROCESS_INFORMATION pi;
@@ -598,6 +665,10 @@ void run_ffmpeg_input(const std::string& cmd, std::function<void(HANDLE)> func) 
         std::cerr << "Failed to start ffmpeg input process." << std::endl;
         return;
     }
+
+    // 取得したプロセスハンドルをグローバル変数に保存
+    g_ffmpegInputProcessHandle = pi.hProcess;
+
     // ここで hPipe を使って、ffmpeg が出力する raw video を読み出す
     func(hPipe);
     // プロセス終了を待機
@@ -606,9 +677,13 @@ void run_ffmpeg_input(const std::string& cmd, std::function<void(HANDLE)> func) 
     if (GetExitCodeProcess(pi.hProcess, &exitCode)) {
         std::cerr << "ffmpeg input process exited with code: " << exitCode << std::endl;
     }
-    CloseHandle(pi.hProcess);
-    CloseHandle(pi.hThread);
-    //CloseHandle(hPipe);
+
+	if (cancelFlag != true)
+	{
+		// 既にキャンセル側で閉じられている可能性もあるので、安全に閉じる
+		SafeCloseHandle(pi.hProcess);
+		SafeCloseHandle(pi.hThread);
+	}
 }
 
 void run_ffmpeg_output(const std::string& cmd, std::function<void(HANDLE)> func) {
@@ -618,16 +693,58 @@ void run_ffmpeg_output(const std::string& cmd, std::function<void(HANDLE)> func)
         std::cerr << "Failed to start ffmpeg output process." << std::endl;
         return;
     }
+
+    // 取得したプロセスハンドルをグローバル変数に保存
+    g_ffmpegOutputProcessHandle = pi.hProcess;
+
     // 書き込み用パイプ hPipe を使って、raw video を ffmpeg に書き込む
     func(hPipe);
     //// パイプを閉じることで ffmpeg 側に EOF を通知する
     //CloseHandle(hPipe);
     WaitForSingleObject(pi.hProcess, INFINITE);
-    CloseHandle(pi.hProcess);
-    CloseHandle(pi.hThread);
+
+    if (cancelFlag != true)
+    {
+        // 既にキャンセル側で閉じられている可能性もあるので、安全に閉じる
+        SafeCloseHandle(pi.hProcess);
+        SafeCloseHandle(pi.hThread);
+    }
 }
 
-//void dml_process_frame(const cv::Mat& in_frame, cv::Mat& out_frame, YOLOv8Detector& detector, RectInfo* rects, int count, ColorInfo name_color, ColorInfo fixframe_color, bool inpaint, bool copyright, bool no_inference)
+// DLL から公開する関数（エクスポート指定をするなど）
+extern "C" __declspec(dllexport)
+bool CancelFfmpegProcesses(void) {
+    bool result = true;
+    cancelFlag = true;
+    // 入力用プロセスが存在していれば終了
+    if (g_ffmpegInputProcessHandle != nullptr) {
+        if (!TerminateProcess(g_ffmpegInputProcessHandle, 0)) {
+            std::cerr << "Failed to terminate ffmpeg input process." << std::endl;
+            result = false;
+        }
+        else {
+            CloseHandle(g_ffmpegInputProcessHandle);
+            //SafeCloseHandle(g_ffmpegInputProcessHandle);
+            g_ffmpegInputProcessHandle = nullptr;
+        }
+    }
+
+    // 出力用プロセスが存在していれば終了
+    if (g_ffmpegOutputProcessHandle != nullptr) {
+        if (!TerminateProcess(g_ffmpegOutputProcessHandle, 0)) {
+            std::cerr << "Failed to terminate ffmpeg output process." << std::endl;
+            result = false;
+        }
+        else {
+            CloseHandle(g_ffmpegOutputProcessHandle);
+			//SafeCloseHandle(g_ffmpegOutputProcessHandle);
+            g_ffmpegOutputProcessHandle = nullptr;
+        }
+    }
+    //cancelFlag = true;
+    return result;
+}
+
 void dml_process_frame(const cv::Mat& in_frame, cv::Mat& out_frame, YOLOv8Detector& detector, RectInfo* rects, int count, ColorInfo name_color, ColorInfo fixframe_color, bool copyright, char* blacked_type, char* fixframe_type, int blacked_param, int fixframe_param)
 {
     // OpenCV の色を作成
@@ -642,7 +759,7 @@ void dml_process_frame(const cv::Mat& in_frame, cv::Mat& out_frame, YOLOv8Detect
         cv::Scalar name_color_Scalar(name_color.b, name_color.g, name_color.r);
 
         cv::Mat processed_frame;
-        //detector.PreProcess(const_cast<cv::Mat&>(in_frame), in_frame.cols, processed_frame);
+
         detector.PreProcess2(const_cast<cv::Mat&>(in_frame), 1280, 736, processed_frame);
 
         auto result = detector.inference(processed_frame);
@@ -661,7 +778,7 @@ void dml_process_frame(const cv::Mat& in_frame, cv::Mat& out_frame, YOLOv8Detect
             float scoreThreshold = 0.01f; // スコアのしきい値（適宜変更）
             float nmsThreshold = 0.5f;   // NMS のしきい値（適宜変更）
             cv::dnn::NMSBoxes(boxes, scores, scoreThreshold, nmsThreshold, indices);
-            //if (inpaint == true)
+
             if (strcmp(blacked_type, "Inpaint") == 0)
             {
                 cv::Mat mask_frame = cv::Mat::zeros(in_frame.size(), CV_8UC1);
@@ -676,17 +793,39 @@ void dml_process_frame(const cv::Mat& in_frame, cv::Mat& out_frame, YOLOv8Detect
             }
             else if (strcmp(blacked_type, "Mosaic") == 0)
             {
+                // 画像全体の矩形を生成
+                cv::Rect imageRect(0, 0, in_frame.cols, in_frame.rows);
+
                 // モザイク処理を適用
                 for (const auto& i : indices) {
-                    // 画像サイズなどに十分余裕があるか確認したほうがよい
-                    applyMosaic(out_frame, boxes[i], 10 / blacked_param); // mosaicFactor は適宜調整
+                    cv::Rect rect = boxes[i];
+                    // ROIと画像全体の交差部分を取得
+                    cv::Rect validRect = boxes[i] & imageRect;
+
+                    // validRectのサイズが所定の閾値以上かどうかチェックする
+                    if (validRect.width > 10 && validRect.height > 10) {  // 必要に応じて閾値を調整
+
+                        // 画像サイズなどに十分余裕があるか確認したほうがよい
+                        applyMosaic(out_frame, validRect, 10 / blacked_param); // mosaicFactor は適宜調整
+                    }
                 }
             }
             else if (strcmp(blacked_type, "Blur") == 0)
             {
+                // 画像全体の矩形を生成
+                cv::Rect imageRect(0, 0, in_frame.cols, in_frame.rows);
+
                 // ブラー処理を適用
                 for (const auto& i : indices) {
-                    applyBlur(out_frame, boxes[i], 5 * blacked_param); // カーネルサイズは適宜調整
+                    cv::Rect rect = boxes[i];
+                    // ROIと画像全体の交差部分を取得
+                    cv::Rect validRect = boxes[i] & imageRect;
+
+                    // validRectのサイズが所定の閾値以上かどうかチェックする
+                    if (validRect.width > 10 && validRect.height > 10) {  // 必要に応じて閾値を調整
+
+                        applyBlur(out_frame, validRect, 5 * blacked_param); // カーネルサイズは適宜調整
+                    }
                 }
             }
             else
@@ -702,14 +841,20 @@ void dml_process_frame(const cv::Mat& in_frame, cv::Mat& out_frame, YOLOv8Detect
     for (int i = 0; i < count; i++)
     {
         cv::Rect rect(rects[i].x, rects[i].y, rects[i].width, rects[i].height);
-        //cv::rectangle(out_frame, rect, fixframe_Scalar, -1);
+
         if (strcmp(fixframe_type, "Mosaic") == 0) {
-            // モザイク処理を適用
-            applyMosaic(out_frame, rect, 10/fixframe_param); // fixframe_param -> mosaicFactor
+            // rectのサイズが所定の閾値以上かどうかチェックする
+            if (rect.width > 10 && rect.height > 10) {  // 必要に応じて閾値を調整
+                // モザイク処理を適用
+                applyMosaic(out_frame, rect, 10 / fixframe_param); // fixframe_param -> mosaicFactor
+            }
         }
         else if (strcmp(fixframe_type, "Blur") == 0) {
-            // ブラー処理を適用
-            applyBlur(out_frame, rect, 5*fixframe_param); // fixframe_param -> kernelSize
+            // rectのサイズが所定の閾値以上かどうかチェックする
+            if (rect.width > 10 && rect.height > 10) {  // 必要に応じて閾値を調整
+                // ブラー処理を適用
+                applyBlur(out_frame, rect, 5 * fixframe_param); // fixframe_param -> kernelSize
+            }
         }
         else {
             // 単色で塗りつぶし
@@ -769,7 +914,6 @@ std::string GetMyDllDirectory() {
 }
 
 //DirectMLを使用した物体検出処理
-//extern "C" __declspec(dllexport) MY_API int dml_main(char* input_video_path, char* output_video_path, char* codec, char* hwaccel, int width, int height, int fps,char* color_primaries,  RectInfo* rects, int count, ColorInfo name_color, ColorInfo fixframe_color, bool inpaint, bool copyright, bool no_inference)
 extern "C" __declspec(dllexport) MY_API int dml_main(char* input_video_path, char* output_video_path, char* codec, char* hwaccel, int width, int height, int fps, char* color_primaries, RectInfo* rects, int count, ColorInfo name_color, ColorInfo fixframe_color, bool copyright, char* blacked_type,char* fixframe_type,int blacked_param,int fixframe_param)
 {
     const char* model_path = "my_yolov8m_s.onnx";
@@ -806,6 +950,7 @@ extern "C" __declspec(dllexport) MY_API int dml_main(char* input_video_path, cha
     cv::Mat current_frame;
     cv::Mat processed_frame;
     total_frame_count = 0;
+    cancelFlag = false;
 
     // フレームを保存するキュー
     std::queue<cv::Mat> frame_queue;
@@ -868,7 +1013,6 @@ extern "C" __declspec(dllexport) MY_API int dml_main(char* input_video_path, cha
                 queue_cv.notify_one();
                 if (!processed_frame.empty()) {
                     // ここで物体検出などの処理を実施
-                    //dml_process_frame(processed_frame, processed_frame, detector, rects, count, name_color, fixframe_color, inpaint, copyright, no_inference);
                     dml_process_frame(processed_frame, processed_frame, detector, rects, count, name_color, fixframe_color,copyright, blacked_type,fixframe_type,blacked_param,fixframe_param);
                     total_frame_count += 1;
                     WriteFrameToPipe(output_pipe, processed_frame);
@@ -967,9 +1111,7 @@ void LetterBox(const cv::Mat& image, cv::Mat& outImage, cv::Vec4d& params, const
 }
 
 //void postprocess(float(&rst)[1][5][33600], cv::Mat& img, cv::Vec4d params);
-//void postprocess(float* rst, int batch_size, std::vector<cv::Mat>& images, std::vector<cv::Vec4d>& params, RectInfo* rects, int count, ColorInfo name_color, ColorInfo fixframe_color, bool inpaint, bool copyright, bool no_inference)
 void postprocess(float* rst, int batch_size, std::vector<cv::Mat>& images, std::vector<cv::Vec4d>& params, RectInfo* rects, int count, ColorInfo name_color, ColorInfo fixframe_color, bool copyright, char* blacked_type, char* fixframe_type, int blacked_param, int fixframe_param)
-//void dml_process_frame(const cv::Mat& in_frame, cv::Mat& out_frame, YOLOv8Detector& detector, RectInfo* rects, int count, ColorInfo name_color, ColorInfo fixframe_color, bool copyright, char* blacked_type, char* fixframe_type, int blacked_param, int fixframe_param)
 {
     // OpenCV の色を作成
 
@@ -1020,7 +1162,6 @@ void postprocess(float* rst, int batch_size, std::vector<cv::Mat>& images, std::
 
             cv::dnn::NMSBoxes(boxes, scores, score_threshold, nms_threshold, indices);
 
-            //if (inpaint == true)
             if (strcmp(blacked_type, "Inpaint") == 0)
             {
                 cv::Mat mask_frame = cv::Mat::zeros(images[b].size(), CV_8UC1);
@@ -1035,17 +1176,40 @@ void postprocess(float* rst, int batch_size, std::vector<cv::Mat>& images, std::
             }
             else if (strcmp(blacked_type, "Mosaic") == 0)
             {
+                // 画像全体の矩形を生成
+                cv::Rect imageRect(0, 0, images[b].cols, images[b].rows);
+
                 // モザイク処理を適用
                 for (const auto& i : indices) {
-                    // 画像サイズなどに十分余裕があるか確認したほうがよい
-                    applyMosaic(images[b], boxes[i], 10 / blacked_param); // mosaicFactor は適宜調整
+                    cv::Rect rect = boxes[i];
+                    // ROIと画像全体の交差部分を取得
+                    cv::Rect validRect = boxes[i] & imageRect;
+
+                    // validRectのサイズが所定の閾値以上かどうかチェックする
+                    if (validRect.width > 10 && validRect.height > 10) {  // 必要に応じて閾値を調整
+
+                        // 画像サイズなどに十分余裕があるか確認したほうがよい
+                        applyMosaic(images[b], validRect, 10 / blacked_param); // mosaicFactor は適宜調整
+                    }
                 }
             }
             else if (strcmp(blacked_type, "Blur") == 0)
             {
+                // 画像全体の矩形を生成
+                cv::Rect imageRect(0, 0, images[b].cols, images[b].rows);
+
                 // ブラー処理を適用
                 for (const auto& i : indices) {
-                    applyBlur(images[b], boxes[i], 5 * blacked_param); // カーネルサイズは適宜調整
+                    cv::Rect rect = boxes[i];
+                    // ROIと画像全体の交差部分を取得
+                    cv::Rect validRect = boxes[i] & imageRect;
+
+                    // validRectのサイズが所定の閾値以上かどうかチェックする
+                    if (validRect.width > 10 && validRect.height > 10) {  // 必要に応じて閾値を調整
+
+                        //applyBlur(image, boxes[i], 5 * blacked_param); // カーネルサイズは適宜調整
+                        applyBlur(images[b], validRect, 5 * blacked_param); // カーネルサイズは適宜調整
+                    }
                 }
             }
             else
@@ -1063,12 +1227,18 @@ void postprocess(float* rst, int batch_size, std::vector<cv::Mat>& images, std::
         {
             cv::Rect rect(rects[i].x, rects[i].y, rects[i].width, rects[i].height);
             if (strcmp(fixframe_type, "Mosaic") == 0) {
-                // モザイク処理を適用
-                applyMosaic(images[b], rect, 10 / fixframe_param); // fixframe_param -> mosaicFactor
+                // rectのサイズが所定の閾値以上かどうかチェックする
+                if (rect.width > 10 && rect.height > 10) {  // 必要に応じて閾値を調整
+                    // モザイク処理を適用
+                    applyMosaic(images[b], rect, 10 / fixframe_param); // fixframe_param -> mosaicFactor
+                }
             }
             else if (strcmp(fixframe_type, "Blur") == 0) {
-                // ブラー処理を適用
-                applyBlur(images[b], rect, 5 * fixframe_param); // fixframe_param -> kernelSize
+                // rectのサイズが所定の閾値以上かどうかチェックする
+                if (rect.width > 10 && rect.height > 10) {  // 必要に応じて閾値を調整
+                    // ブラー処理を適用
+                    applyBlur(images[b], rect, 5 * fixframe_param); // fixframe_param -> kernelSize
+                }
             }
             else {
                 cv::rectangle(images[b], rect, fixframe_Scalar, -1);
@@ -1092,7 +1262,7 @@ void postprocess(float* rst, int batch_size, std::vector<cv::Mat>& images, std::
 }
 
 
-//extern "C" __declspec(dllexport) MY_API int trt_main(char* input_video_path, char* output_video_path, char* codec, char* hwaccel, int width, int height, int fps, char* color_primaries, RectInfo* rects, int count, ColorInfo name_color, ColorInfo fixframe_color, bool inpaint, bool copyright, bool no_inference)
+// TensorRTを使用した物体検出処理
 extern "C" __declspec(dllexport) MY_API int trt_main(char* input_video_path, char* output_video_path, char* codec, char* hwaccel, int width, int height, int fps, char* color_primaries, RectInfo* rects, int count, ColorInfo name_color, ColorInfo fixframe_color, bool copyright, char* blacked_type, char* fixframe_type, int blacked_param, int fixframe_param)
 {
     using namespace winrt::Windows::Storage;
@@ -1189,9 +1359,7 @@ extern "C" __declspec(dllexport) MY_API int trt_main(char* input_video_path, cha
     std::mutex queue_mutex;
     std::condition_variable queue_cv;
     bool finished_reading = false;
-
-
-
+    cancelFlag = false;
 
     // 読み取りスレッド：ffmpeg_input の出力（raw video）を読み込む
     std::thread read_thread([&]() {
@@ -1272,7 +1440,6 @@ extern "C" __declspec(dllexport) MY_API int trt_main(char* input_video_path, cha
 
                 cudaMemcpyAsync(rst, buffers[outputIndex], batch_size * 5 * 19320 * sizeof(float), cudaMemcpyDeviceToHost, stream);
 
-                //postprocess(rst, frames.size(), frames, params, rects, count, name_color, fixframe_color, inpaint, copyright, no_inference);
                 postprocess(rst, frames.size(), frames, params, rects, count, name_color, fixframe_color,  copyright, blacked_type, fixframe_type, blacked_param, fixframe_param);
                 for (auto& frame : frames) {
                     WriteFrameToPipe(output_pipe, frame);
