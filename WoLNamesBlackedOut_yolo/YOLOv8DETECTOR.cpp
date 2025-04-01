@@ -987,6 +987,10 @@ extern "C" __declspec(dllexport) MY_API int dml_main(char* input_video_path, cha
             });
         });
 
+    // 少し待機する（例：200ミリ秒の遅延）
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+
+
     // 書き込みスレッド：ffmpeg_output の入力側へ処理済みフレームを書き込む
     std::thread write_thread([&]() {
         run_ffmpeg_output(ffmpeg_output_cmd, [&](HANDLE output_pipe) {
@@ -995,7 +999,7 @@ extern "C" __declspec(dllexport) MY_API int dml_main(char* input_video_path, cha
                 {
                     std::unique_lock<std::mutex> lock(queue_mutex);
                     // 1秒間待っても返事がなければタイムアウトとする
-                    if (!queue_cv.wait_for(lock, std::chrono::seconds(1), [&]() {
+                    if (!queue_cv.wait_for(lock, std::chrono::milliseconds(200), [&]() {
                         return !frame_queue.empty() || finished_reading;
                         })) {
                         std::cerr << "Write thread: wait_for timed out (no data for 1 second)." << std::endl;
@@ -1389,6 +1393,9 @@ extern "C" __declspec(dllexport) MY_API int trt_main(char* input_video_path, cha
         });
     });
 
+    // 少し待機する（例：200ミリ秒の遅延）
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+
 
     // 書き込みスレッド：ffmpeg_output の入力側へ処理済みフレームを書き込む
     std::thread write_thread([&]() {
@@ -1399,7 +1406,7 @@ extern "C" __declspec(dllexport) MY_API int trt_main(char* input_video_path, cha
                 {
                     std::unique_lock<std::mutex> lock(queue_mutex);
                     // 1秒間待ってもデータがなければタイムアウトとして終了する
-                    if (!queue_cv.wait_for(lock, std::chrono::seconds(1), [&]() {
+                    if (!queue_cv.wait_for(lock, std::chrono::milliseconds(200), [&]() {
                         return !frame_queue.empty() || finished_reading;
                         })) {
                         std::cerr << "Write thread: wait_for timed out (no data for 1 second)." << std::endl;
