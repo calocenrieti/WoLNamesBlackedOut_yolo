@@ -988,7 +988,7 @@ extern "C" __declspec(dllexport) MY_API int dml_main(char* input_video_path, cha
         });
 
     // 少し待機する（例：200ミリ秒の遅延）
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    std::this_thread::sleep_for(std::chrono::milliseconds(1000));
 
 
     // 書き込みスレッド：ffmpeg_output の入力側へ処理済みフレームを書き込む
@@ -1394,7 +1394,7 @@ extern "C" __declspec(dllexport) MY_API int trt_main(char* input_video_path, cha
     });
 
     // 少し待機する（例：200ミリ秒の遅延）
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    std::this_thread::sleep_for(std::chrono::milliseconds(1000));
 
 
     // 書き込みスレッド：ffmpeg_output の入力側へ処理済みフレームを書き込む
