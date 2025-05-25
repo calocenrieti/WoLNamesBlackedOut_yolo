@@ -75,8 +75,8 @@
   </ImportGroup>
   <PropertyGroup Label="UserMacros" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
-    <ExternalIncludePath>D:\TensorRT-10.7.0.23\include;D:\opencv_prebuild\build\include;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.4\include;$(ExternalIncludePath)</ExternalIncludePath>
-    <LibraryPath>D:\TensorRT-10.7.0.23\lib;D:\opencv_prebuild\build\x64\vc16\lib;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.4\lib\x64;$(LibraryPath)</LibraryPath>
+    <ExternalIncludePath>D:\TensorRT-10.11.0.33\include;D:\opencv_prebuild\build\include;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.8\include;$(ExternalIncludePath)</ExternalIncludePath>
+    <LibraryPath>D:\TensorRT-10.11.0.33\lib;D:\opencv_prebuild\build\x64\vc16\lib;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.8\lib\x64;$(LibraryPath)</LibraryPath>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <ExternalIncludePath>D:\TensorRT-10.7.0.23\include;D:\opencv_prebuild\build\include;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.4\include;D:\ffmpeg-N-118368-gf632ab53d9-win64-shared\include;$(VC_IncludePath);$(WindowsSDK_IncludePath);</ExternalIncludePath>

@@ -914,7 +914,8 @@ std::string GetMyDllDirectory() {
 }
 
 //DirectMLを使用した物体検出処理
-extern "C" __declspec(dllexport) MY_API int dml_main(char* input_video_path, char* output_video_path, char* codec, char* hwaccel, int width, int height, int fps, char* color_primaries, RectInfo* rects, int count, ColorInfo name_color, ColorInfo fixframe_color, bool copyright, char* blacked_type,char* fixframe_type,int blacked_param,int fixframe_param)
+//extern "C" __declspec(dllexport) MY_API int dml_main(char* input_video_path, char* output_video_path, char* codec, char* hwaccel, int width, int height, int fps, char* color_primaries, RectInfo* rects, int count, ColorInfo name_color, ColorInfo fixframe_color, bool copyright, char* blacked_type,char* fixframe_type,int blacked_param,int fixframe_param)
+extern "C" __declspec(dllexport) MY_API int dml_main(char* input_video_path, char* output_video_path, char* codec, char* hwaccel, int width, int height, int fps, char* color_primaries, RectInfo* rects, int count, ColorInfo name_color, ColorInfo fixframe_color, bool copyright, char* blacked_type, char* fixframe_type, int blacked_param, int fixframe_param, char* bitrate)
 {
     const char* model_path = "my_yolov8m_s.onnx";
 
@@ -945,7 +946,8 @@ extern "C" __declspec(dllexport) MY_API int dml_main(char* input_video_path, cha
 
     std::string ffmpeg_output_cmd = std::string(quotedFfmpegExePath) + " -loglevel quiet -y -f rawvideo -pix_fmt bgr24 -s " + std::to_string(width) + "x" + std::to_string(height) +
         " -r " + std::to_string(fps) + " -i pipe:0 -movflags faststart -pix_fmt yuv420p -vcodec " + std::string(codec) +
-        " -b:v 11M -preset slow \"" + std::string(output_video_path) + "\"";
+        //" -b:v 11M -preset slow \"" + std::string(output_video_path) + "\"";
+        " -b:v " + std::string(bitrate) + " -preset slow \"" + std::string(output_video_path) + "\"";
 
     cv::Mat current_frame;
     cv::Mat processed_frame;
@@ -1267,7 +1269,8 @@ void postprocess(float* rst, int batch_size, std::vector<cv::Mat>& images, std::
 
 
 // TensorRTを使用した物体検出処理
-extern "C" __declspec(dllexport) MY_API int trt_main(char* input_video_path, char* output_video_path, char* codec, char* hwaccel, int width, int height, int fps, char* color_primaries, RectInfo* rects, int count, ColorInfo name_color, ColorInfo fixframe_color, bool copyright, char* blacked_type, char* fixframe_type, int blacked_param, int fixframe_param)
+//extern "C" __declspec(dllexport) MY_API int trt_main(char* input_video_path, char* output_video_path, char* codec, char* hwaccel, int width, int height, int fps, char* color_primaries, RectInfo* rects, int count, ColorInfo name_color, ColorInfo fixframe_color, bool copyright, char* blacked_type, char* fixframe_type, int blacked_param, int fixframe_param)
+extern "C" __declspec(dllexport) MY_API int trt_main(char* input_video_path, char* output_video_path, char* codec, char* hwaccel, int width, int height, int fps, char* color_primaries, RectInfo* rects, int count, ColorInfo name_color, ColorInfo fixframe_color, bool copyright, char* blacked_type, char* fixframe_type, int blacked_param, int fixframe_param, char* bitrate)
 {
     using namespace winrt::Windows::Storage;
 
@@ -1293,7 +1296,7 @@ extern "C" __declspec(dllexport) MY_API int trt_main(char* input_video_path, cha
 
     // アプリケーション専用のフォルダパスを組み立てる
     std::wstring appFolderPath = std::wstring(localAppDataPath) + std::wstring{ L"\\WoLNamesBlackedOut" };
-    std::wstring engineFilePath = appFolderPath + std::wstring{ L"\\my_yolov8m_s.engine" };
+    std::wstring engineFilePath = appFolderPath + std::wstring{ L"\\my_yolov8m_s_20250525.engine" };
 
     std::string engineFilePathStr(engineFilePath.length(), 0);
     std::transform(engineFilePath.begin(), engineFilePath.end(), engineFilePathStr.begin(), [](wchar_t c) {
@@ -1351,7 +1354,8 @@ extern "C" __declspec(dllexport) MY_API int trt_main(char* input_video_path, cha
 
     std::string ffmpeg_output_cmd = std::string(quotedFfmpegExePath) + " -loglevel quiet -y -f rawvideo -pix_fmt bgr24 -s " + std::to_string(width) + "x" + std::to_string(height) +
         " -r " + std::to_string(fps) + " -i pipe:0 -movflags faststart -pix_fmt yuv420p -vcodec " + std::string(codec) +
-        " -b:v 11M -preset slow \"" + std::string(output_video_path) + "\"";
+        //" -b:v 11M -preset slow \"" + std::string(output_video_path) + "\"";
+        " -b:v " + std::string(bitrate) + " -preset slow \"" + std::string(output_video_path) + "\"";
 
     cv::Mat current_frame;
     cv::Mat processed_frame;
