@@ -934,7 +934,7 @@ extern "C" __declspec(dllexport) MY_API int dml_main(char* input_video_path, cha
     std::string quotedFfmpegExePath = "\"" + ffmpegPath + "\"";
     
     std::string ffmpeg_input_cmd;
-    if (std::string(color_primaries) !="bt709") {
+    if (std::string(color_primaries) =="bt2020") {
         ffmpeg_input_cmd = std::string(quotedFfmpegExePath) +" -loglevel quiet -hwaccel " + std::string(hwaccel) + " -i \"" + std::string(input_video_path) + "\" " +
             "-vf \"zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv\" " +
             "-f image2pipe -vcodec rawvideo -pix_fmt bgr24 -";
@@ -1341,7 +1341,7 @@ extern "C" __declspec(dllexport) MY_API int trt_main(char* input_video_path, cha
     std::string quotedFfmpegExePath = "\"" + ffmpegPath + "\"";
 
     std::string ffmpeg_input_cmd;
-    if (std::string(color_primaries) != "bt709") {
+    if (std::string(color_primaries) == "bt2020") {
         ffmpeg_input_cmd = std::string(quotedFfmpegExePath) + " -loglevel quiet -hwaccel " + std::string(hwaccel) + " -i \"" + std::string(input_video_path) + "\" " +
             "-vf \"zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv\" " +
             "-f image2pipe -vcodec rawvideo -pix_fmt bgr24 -";
