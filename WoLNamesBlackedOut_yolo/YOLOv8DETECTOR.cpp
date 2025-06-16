@@ -640,12 +640,56 @@ cv::Mat ReadFrameFromPipe(HANDLE hPipe, int width, int height) {
 
 
 // 子プロセス（ffmpeg）のパイプへ1フレーム分の raw video を書き込む関数
+//void WriteFrameToPipe(HANDLE hPipe, const cv::Mat& frame) {
+//    DWORD bytesWritten = 0;
+//    size_t dataSize = frame.total() * frame.elemSize();
+//    BOOL success = WriteFile(hPipe, frame.data, static_cast<DWORD>(dataSize), &bytesWritten, NULL);
+//    if (!success || bytesWritten != dataSize) {
+//        std::cerr << "WriteFile failed or incomplete write. Expected " << dataSize << " bytes, wrote " << bytesWritten << std::endl;
+//    }
+//}
+//void WriteFrameToPipe(HANDLE hPipe, const cv::Mat& frame) {
+//    size_t dataSize = frame.total() * frame.elemSize();
+//    const unsigned char* dataPtr = frame.data;
+//    size_t totalWritten = 0;
+//    DWORD bytesWritten = 0;
+//
+//    while (totalWritten < dataSize) {
+//        DWORD toWrite = static_cast<DWORD>(std::min<size_t>(dataSize - totalWritten, 1 << 20)); // 最大1MBずつ
+//        BOOL success = WriteFile(hPipe, dataPtr + totalWritten, toWrite, &bytesWritten, NULL);
+//        if (!success || bytesWritten == 0) {
+//            std::cerr << "WriteFile failed or incomplete write. Expected " << dataSize
+//                << " bytes, wrote " << totalWritten + bytesWritten << std::endl;
+//            break;
+//        }
+//        totalWritten += bytesWritten;
+//    }
+//    if (totalWritten != dataSize) {
+//        std::cerr << "WriteFrameToPipe: incomplete write. Expected " << dataSize
+//            << " bytes, wrote " << totalWritten << std::endl;
+//    }
+//}
+constexpr size_t PIPE_WRITE_CHUNK = 8 * 1024 * 1024; // 8MB
+
 void WriteFrameToPipe(HANDLE hPipe, const cv::Mat& frame) {
-    DWORD bytesWritten = 0;
     size_t dataSize = frame.total() * frame.elemSize();
-    BOOL success = WriteFile(hPipe, frame.data, static_cast<DWORD>(dataSize), &bytesWritten, NULL);
-    if (!success || bytesWritten != dataSize) {
-        std::cerr << "WriteFile failed or incomplete write. Expected " << dataSize << " bytes, wrote " << bytesWritten << std::endl;
+    const unsigned char* dataPtr = frame.data;
+    size_t totalWritten = 0;
+    DWORD bytesWritten = 0;
+
+    while (totalWritten < dataSize) {
+        DWORD toWrite = static_cast<DWORD>(std::min<size_t>(dataSize - totalWritten, PIPE_WRITE_CHUNK));
+        BOOL success = WriteFile(hPipe, dataPtr + totalWritten, toWrite, &bytesWritten, NULL);
+        if (!success || bytesWritten == 0) {
+            std::cerr << "WriteFile failed or incomplete write. Expected " << dataSize
+                << " bytes, wrote " << totalWritten + bytesWritten << std::endl;
+            break;
+        }
+        totalWritten += bytesWritten;
+    }
+    if (totalWritten != dataSize) {
+        std::cerr << "WriteFrameToPipe: incomplete write. Expected " << dataSize
+            << " bytes, wrote " << totalWritten << std::endl;
     }
 }
 
