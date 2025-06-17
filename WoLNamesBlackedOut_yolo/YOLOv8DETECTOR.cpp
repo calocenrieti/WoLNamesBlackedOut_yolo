@@ -20,7 +20,10 @@
 // グローバル変数
 HANDLE g_ffmpegInputProcessHandle = nullptr;
 HANDLE g_ffmpegOutputProcessHandle = nullptr;
-bool cancelFlag = false;
+std::atomic<bool> cancelFlag = false;
+constexpr int MIN_VALID_RECT_SIZE = 10;
+constexpr int DEFAULT_MOSAIC_FACTOR = 10;
+constexpr int DEFAULT_BLUR_FACTOR = 5;
 
 class MY_API YOLOv8Detector {
 public:
@@ -418,10 +421,10 @@ extern "C" __declspec(dllexport) MY_API int preview_api(const char* image_path, 
                     cv::Rect validRect = boxes[i] & shrinkImgRect;
 
                     // validRectのサイズが所定の閾値以上かどうかチェックする
-                    if (validRect.width > 10 && validRect.height > 10) {  // 必要に応じて閾値を調整
+                    if (validRect.width > MIN_VALID_RECT_SIZE && validRect.height > MIN_VALID_RECT_SIZE) {  // 必要に応じて閾値を調整
 
                         // 画像サイズなどに十分余裕があるか確認したほうがよい
-                        applyMosaic(image, validRect, 10 / blacked_param); // mosaicFactor は適宜調整
+                        applyMosaic(image, validRect, DEFAULT_MOSAIC_FACTOR / blacked_param); // mosaicFactor は適宜調整
                     }
                 }
             }
@@ -437,9 +440,9 @@ extern "C" __declspec(dllexport) MY_API int preview_api(const char* image_path, 
                     cv::Rect validRect = boxes[i] & shrinkImgRect;
 
                     // validRectのサイズが所定の閾値以上かどうかチェックする
-                    if (validRect.width > 10 && validRect.height > 10) {  // 必要に応じて閾値を調整
+                    if (validRect.width > MIN_VALID_RECT_SIZE && validRect.height > MIN_VALID_RECT_SIZE) {  // 必要に応じて閾値を調整
 
-                        applyBlur(image, validRect, 5 * blacked_param); // カーネルサイズは適宜調整
+                        applyBlur(image, validRect, DEFAULT_BLUR_FACTOR * blacked_param); // カーネルサイズは適宜調整
                     }
                 }
             }
@@ -459,16 +462,16 @@ extern "C" __declspec(dllexport) MY_API int preview_api(const char* image_path, 
         cv::Rect rect(rects[i].x, rects[i].y, rects[i].width, rects[i].height);
         if (strcmp(fixframe_type, "Mosaic") == 0) {
             // rectのサイズが所定の閾値以上かどうかチェックする
-            if (rect.width > 10 && rect.height > 10) {  // 必要に応じて閾値を調整
+            if (rect.width > MIN_VALID_RECT_SIZE && rect.height > MIN_VALID_RECT_SIZE) {  // 必要に応じて閾値を調整
                 // モザイク処理を適用
-                applyMosaic(image, rect, 10 / fixframe_param); // fixframe_param -> mosaicFactor
+                applyMosaic(image, rect, DEFAULT_MOSAIC_FACTOR / fixframe_param); // fixframe_param -> mosaicFactor
             }
         }
         else if (strcmp(fixframe_type, "Blur") == 0) {
             // rectのサイズが所定の閾値以上かどうかチェックする
-            if (rect.width > 10 && rect.height > 10) {  // 必要に応じて閾値を調整
+            if (rect.width > MIN_VALID_RECT_SIZE && rect.height > MIN_VALID_RECT_SIZE) {  // 必要に応じて閾値を調整
                 // ブラー処理を適用
-                applyBlur(image, rect, 5 * fixframe_param); // fixframe_param -> kernelSize
+                applyBlur(image, rect, DEFAULT_BLUR_FACTOR * fixframe_param); // fixframe_param -> kernelSize
             }
         }
         else {
@@ -640,38 +643,14 @@ cv::Mat ReadFrameFromPipe(HANDLE hPipe, int width, int height) {
 
 
 // 子プロセス（ffmpeg）のパイプへ1フレーム分の raw video を書き込む関数
-//void WriteFrameToPipe(HANDLE hPipe, const cv::Mat& frame) {
-//    DWORD bytesWritten = 0;
-//    size_t dataSize = frame.total() * frame.elemSize();
-//    BOOL success = WriteFile(hPipe, frame.data, static_cast<DWORD>(dataSize), &bytesWritten, NULL);
-//    if (!success || bytesWritten != dataSize) {
-//        std::cerr << "WriteFile failed or incomplete write. Expected " << dataSize << " bytes, wrote " << bytesWritten << std::endl;
-//    }
-//}
-//void WriteFrameToPipe(HANDLE hPipe, const cv::Mat& frame) {
-//    size_t dataSize = frame.total() * frame.elemSize();
-//    const unsigned char* dataPtr = frame.data;
-//    size_t totalWritten = 0;
-//    DWORD bytesWritten = 0;
-//
-//    while (totalWritten < dataSize) {
-//        DWORD toWrite = static_cast<DWORD>(std::min<size_t>(dataSize - totalWritten, 1 << 20)); // 最大1MBずつ
-//        BOOL success = WriteFile(hPipe, dataPtr + totalWritten, toWrite, &bytesWritten, NULL);
-//        if (!success || bytesWritten == 0) {
-//            std::cerr << "WriteFile failed or incomplete write. Expected " << dataSize
-//                << " bytes, wrote " << totalWritten + bytesWritten << std::endl;
-//            break;
-//        }
-//        totalWritten += bytesWritten;
-//    }
-//    if (totalWritten != dataSize) {
-//        std::cerr << "WriteFrameToPipe: incomplete write. Expected " << dataSize
-//            << " bytes, wrote " << totalWritten << std::endl;
-//    }
-//}
+
 constexpr size_t PIPE_WRITE_CHUNK = 8 * 1024 * 1024; // 8MB
 
 void WriteFrameToPipe(HANDLE hPipe, const cv::Mat& frame) {
+    if (frame.empty() || frame.data == nullptr) {
+        std::cerr << "WriteFrameToPipe: frame is empty or data is null." << std::endl;
+        return;
+    }
     size_t dataSize = frame.total() * frame.elemSize();
     const unsigned char* dataPtr = frame.data;
     size_t totalWritten = 0;
@@ -682,7 +661,8 @@ void WriteFrameToPipe(HANDLE hPipe, const cv::Mat& frame) {
         BOOL success = WriteFile(hPipe, dataPtr + totalWritten, toWrite, &bytesWritten, NULL);
         if (!success || bytesWritten == 0) {
             std::cerr << "WriteFile failed or incomplete write. Expected " << dataSize
-                << " bytes, wrote " << totalWritten + bytesWritten << std::endl;
+                << " bytes, wrote " << totalWritten + bytesWritten
+                << " (error=" << GetLastError() << ")" << std::endl;
             break;
         }
         totalWritten += bytesWritten;
@@ -847,10 +827,10 @@ void dml_process_frame(const cv::Mat& in_frame, cv::Mat& out_frame, YOLOv8Detect
                     cv::Rect validRect = boxes[i] & imageRect;
 
                     // validRectのサイズが所定の閾値以上かどうかチェックする
-                    if (validRect.width > 10 && validRect.height > 10) {  // 必要に応じて閾値を調整
+                    if (validRect.width > MIN_VALID_RECT_SIZE && validRect.height > MIN_VALID_RECT_SIZE) {  // 必要に応じて閾値を調整
 
                         // 画像サイズなどに十分余裕があるか確認したほうがよい
-                        applyMosaic(out_frame, validRect, 10 / blacked_param); // mosaicFactor は適宜調整
+                        applyMosaic(out_frame, validRect, DEFAULT_MOSAIC_FACTOR / blacked_param); // mosaicFactor は適宜調整
                     }
                 }
             }
@@ -866,9 +846,9 @@ void dml_process_frame(const cv::Mat& in_frame, cv::Mat& out_frame, YOLOv8Detect
                     cv::Rect validRect = boxes[i] & imageRect;
 
                     // validRectのサイズが所定の閾値以上かどうかチェックする
-                    if (validRect.width > 10 && validRect.height > 10) {  // 必要に応じて閾値を調整
+                    if (validRect.width > MIN_VALID_RECT_SIZE && validRect.height > MIN_VALID_RECT_SIZE) {  // 必要に応じて閾値を調整
 
-                        applyBlur(out_frame, validRect, 5 * blacked_param); // カーネルサイズは適宜調整
+                        applyBlur(out_frame, validRect, DEFAULT_BLUR_FACTOR * blacked_param); // カーネルサイズは適宜調整
                     }
                 }
             }
@@ -888,16 +868,16 @@ void dml_process_frame(const cv::Mat& in_frame, cv::Mat& out_frame, YOLOv8Detect
 
         if (strcmp(fixframe_type, "Mosaic") == 0) {
             // rectのサイズが所定の閾値以上かどうかチェックする
-            if (rect.width > 10 && rect.height > 10) {  // 必要に応じて閾値を調整
+            if (rect.width > MIN_VALID_RECT_SIZE && rect.height > MIN_VALID_RECT_SIZE) {  // 必要に応じて閾値を調整
                 // モザイク処理を適用
-                applyMosaic(out_frame, rect, 10 / fixframe_param); // fixframe_param -> mosaicFactor
+                applyMosaic(out_frame, rect, DEFAULT_MOSAIC_FACTOR / fixframe_param); // fixframe_param -> mosaicFactor
             }
         }
         else if (strcmp(fixframe_type, "Blur") == 0) {
             // rectのサイズが所定の閾値以上かどうかチェックする
-            if (rect.width > 10 && rect.height > 10) {  // 必要に応じて閾値を調整
+            if (rect.width > MIN_VALID_RECT_SIZE && rect.height > MIN_VALID_RECT_SIZE) {  // 必要に応じて閾値を調整
                 // ブラー処理を適用
-                applyBlur(out_frame, rect, 5 * fixframe_param); // fixframe_param -> kernelSize
+                applyBlur(out_frame, rect, DEFAULT_BLUR_FACTOR * fixframe_param); // fixframe_param -> kernelSize
             }
         }
         else {
@@ -1008,7 +988,7 @@ extern "C" __declspec(dllexport) MY_API int dml_main(char* input_video_path, cha
      // 読み取りスレッド：ffmpeg_input の出力（raw video）を読み込む
     std::thread read_thread([&]() {
         run_ffmpeg_input(ffmpeg_input_cmd, [&](HANDLE input_pipe) {
-            while (true) {
+            while (!cancelFlag) {
                 cv::Mat frame = ReadFrameFromPipe(input_pipe, width, height);
                 if (frame.empty()) {
                     break;
@@ -1034,22 +1014,30 @@ extern "C" __declspec(dllexport) MY_API int dml_main(char* input_video_path, cha
         });
 
     // 少し待機する（例：200ミリ秒の遅延）
-    std::this_thread::sleep_for(std::chrono::milliseconds(2000));
+    std::this_thread::sleep_for(std::chrono::milliseconds(1000));
 
 
     // 書き込みスレッド：ffmpeg_output の入力側へ処理済みフレームを書き込む
+    std::atomic<bool> writing_frame = false; // 書き込み中フラグを追加
+
     std::thread write_thread([&]() {
         run_ffmpeg_output(ffmpeg_output_cmd, [&](HANDLE output_pipe) {
-            while (true) {
+            while (!cancelFlag) {
                 cv::Mat processed_frame;
                 {
                     std::unique_lock<std::mutex> lock(queue_mutex);
                     // 1秒間待っても返事がなければタイムアウトとする
-                    if (!queue_cv.wait_for(lock, std::chrono::milliseconds(200), [&]() {
+                    if (!queue_cv.wait_for(lock, std::chrono::milliseconds(3000), [&]() {
                         return !frame_queue.empty() || finished_reading;
                         })) {
-                        std::cerr << "Write thread: wait_for timed out (no data for 1 second)." << std::endl;
-                        break;
+                        // タイムアウト時、書き込み中なら終了しない
+                        if (writing_frame) {
+                            std::cerr << "Write thread: wait_for timed out, but writing in progress. Continue waiting." << std::endl;
+                            continue;
+                        } else {
+                            std::cerr << "Write thread: wait_for timed out (no data for 3 seconds, not writing). Exiting." << std::endl;
+                            break;
+                        }
                     }
                     if (frame_queue.empty() && finished_reading) {
                         std::cerr << "Exit write loop: frame queue empty and finished_reading is true." << std::endl;
@@ -1060,13 +1048,19 @@ extern "C" __declspec(dllexport) MY_API int dml_main(char* input_video_path, cha
                         frame_queue.pop();
                     }
                 }
-                queue_cv.notify_one();
+
                 if (!processed_frame.empty()) {
-                    // ここで物体検出などの処理を実施
-                    dml_process_frame(processed_frame, processed_frame, detector, rects, count, name_color, fixframe_color,copyright, blacked_type,fixframe_type,blacked_param,fixframe_param);
-                    total_frame_count += 1;
-                    WriteFrameToPipe(output_pipe, processed_frame);
+                    writing_frame = true; // 書き込み開始
+                    try {
+                        dml_process_frame(processed_frame, processed_frame, detector, rects, count, name_color, fixframe_color, copyright, blacked_type, fixframe_type, blacked_param, fixframe_param);
+                        total_frame_count += 1;
+                        WriteFrameToPipe(output_pipe, processed_frame);
+                    } catch (const std::exception& e) {
+                        std::cerr << "Exception in write thread: " << e.what() << std::endl;
+                    }
+                    writing_frame = false; // 書き込み終了
                 }
+                queue_cv.notify_one();
             }
             queue_cv.notify_one();
             std::cerr << "Write thread: closing output pipe handle to signal EOF to ffmpeg." << std::endl;
@@ -1231,15 +1225,9 @@ void postprocess(float* rst, int batch_size, std::vector<cv::Mat>& images, std::
 
                 // モザイク処理を適用
                 for (const auto& i : indices) {
-                    cv::Rect rect = boxes[i];
-                    // ROIと画像全体の交差部分を取得
-                    cv::Rect validRect = boxes[i] & imageRect;
-
-                    // validRectのサイズが所定の閾値以上かどうかチェックする
-                    if (validRect.width > 10 && validRect.height > 10) {  // 必要に応じて閾値を調整
-
-                        // 画像サイズなどに十分余裕があるか確認したほうがよい
-                        applyMosaic(images[b], validRect, 10 / blacked_param); // mosaicFactor は適宜調整
+                    cv::Rect validRect = boxes[i] & cv::Rect(0, 0, images[b].cols, images[b].rows);
+                    if (validRect.width > MIN_VALID_RECT_SIZE && validRect.height > MIN_VALID_RECT_SIZE) {
+                        applyMosaic(images[b], validRect, DEFAULT_MOSAIC_FACTOR / blacked_param); // mosaicFactor は適宜調整
                     }
                 }
             }
@@ -1250,15 +1238,9 @@ void postprocess(float* rst, int batch_size, std::vector<cv::Mat>& images, std::
 
                 // ブラー処理を適用
                 for (const auto& i : indices) {
-                    cv::Rect rect = boxes[i];
-                    // ROIと画像全体の交差部分を取得
-                    cv::Rect validRect = boxes[i] & imageRect;
-
-                    // validRectのサイズが所定の閾値以上かどうかチェックする
-                    if (validRect.width > 10 && validRect.height > 10) {  // 必要に応じて閾値を調整
-
-                        //applyBlur(image, boxes[i], 5 * blacked_param); // カーネルサイズは適宜調整
-                        applyBlur(images[b], validRect, 5 * blacked_param); // カーネルサイズは適宜調整
+                    cv::Rect validRect = boxes[i] & cv::Rect(0, 0, images[b].cols, images[b].rows);
+                    if (validRect.width > MIN_VALID_RECT_SIZE && validRect.height > MIN_VALID_RECT_SIZE) {
+                        applyBlur(images[b], validRect, DEFAULT_BLUR_FACTOR * blacked_param); // カーネルサイズは適宜調整
                     }
                 }
             }
@@ -1278,16 +1260,16 @@ void postprocess(float* rst, int batch_size, std::vector<cv::Mat>& images, std::
             cv::Rect rect(rects[i].x, rects[i].y, rects[i].width, rects[i].height);
             if (strcmp(fixframe_type, "Mosaic") == 0) {
                 // rectのサイズが所定の閾値以上かどうかチェックする
-                if (rect.width > 10 && rect.height > 10) {  // 必要に応じて閾値を調整
+                if (rect.width > MIN_VALID_RECT_SIZE && rect.height > MIN_VALID_RECT_SIZE) {  // 必要に応じて閾値を調整
                     // モザイク処理を適用
-                    applyMosaic(images[b], rect, 10 / fixframe_param); // fixframe_param -> mosaicFactor
+                    applyMosaic(images[b], rect, DEFAULT_MOSAIC_FACTOR / fixframe_param); // fixframe_param -> mosaicFactor
                 }
             }
             else if (strcmp(fixframe_type, "Blur") == 0) {
                 // rectのサイズが所定の閾値以上かどうかチェックする
-                if (rect.width > 10 && rect.height > 10) {  // 必要に応じて閾値を調整
+                if (rect.width > MIN_VALID_RECT_SIZE && rect.height > MIN_VALID_RECT_SIZE) {  // 必要に応じて閾値を調整
                     // ブラー処理を適用
-                    applyBlur(images[b], rect, 5 * fixframe_param); // fixframe_param -> kernelSize
+                    applyBlur(images[b], rect, DEFAULT_BLUR_FACTOR * fixframe_param); // fixframe_param -> kernelSize
                 }
             }
             else {
@@ -1416,7 +1398,7 @@ extern "C" __declspec(dllexport) MY_API int trt_main(char* input_video_path, cha
     // 読み取りスレッド：ffmpeg_input の出力（raw video）を読み込む
     std::thread read_thread([&]() {
         run_ffmpeg_input(ffmpeg_input_cmd, [&](HANDLE input_pipe) {
-            while (true) {
+            while (!cancelFlag) {
                 cv::Mat frame = ReadFrameFromPipe(input_pipe, width, height);
                 if (frame.empty()) {
                     break;
@@ -1446,19 +1428,28 @@ extern "C" __declspec(dllexport) MY_API int trt_main(char* input_video_path, cha
 
 
     // 書き込みスレッド：ffmpeg_output の入力側へ処理済みフレームを書き込む
+    std::atomic<bool> writing_frame = false; // 書き込み中フラグを追加
+
     std::thread write_thread([&]() {
         run_ffmpeg_output(ffmpeg_output_cmd, [&](HANDLE output_pipe) {
-            while (true) {
+            while (!cancelFlag) {
                 std::vector<cv::Mat> frames;
                 std::vector<cv::Vec4d> params;
                 {
                     std::unique_lock<std::mutex> lock(queue_mutex);
                     // 1秒間待ってもデータがなければタイムアウトとして終了する
-                    if (!queue_cv.wait_for(lock, std::chrono::milliseconds(2000), [&]() {
+                    if (!queue_cv.wait_for(lock, std::chrono::milliseconds(3000), [&]() {
                         return !frame_queue.empty() || finished_reading;
                         })) {
-                        std::cerr << "Write thread: wait_for timed out (no data for 1 second)." << std::endl;
-                        break;
+                        // タイムアウト時、書き込み中なら終了しない
+                        if (writing_frame) {
+                            std::cerr << "Write thread: wait_for timed out, but writing in progress. Continue waiting." << std::endl;
+                            continue;
+                        }
+                        else {
+                            std::cerr << "Write thread: wait_for timed out (no data for 3 seconds, not writing). Exiting." << std::endl;
+                            break;
+                        }
                     }
                     if (frame_queue.empty() && finished_reading) {
                         std::cerr << "Exit write loop: frame queue empty and finished_reading is true." << std::endl;
@@ -1473,7 +1464,7 @@ extern "C" __declspec(dllexport) MY_API int trt_main(char* input_video_path, cha
                     std::cerr << "No frames to process, exiting write loop." << std::endl;
                     break;
                 }
-
+                writing_frame = true; // 書き込み開始
                 std::vector<cv::Mat> blobs;
                 for (auto& frame : frames) {
                     cv::Mat LetterBoxImg;
@@ -1499,7 +1490,7 @@ extern "C" __declspec(dllexport) MY_API int trt_main(char* input_video_path, cha
                 for (auto& frame : frames) {
                     WriteFrameToPipe(output_pipe, frame);
                 }
-
+                writing_frame = false; // 書き込み終了
                 total_frame_count += frames.size();
                 queue_cv.notify_one();
             }
