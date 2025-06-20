@@ -1027,7 +1027,7 @@ extern "C" __declspec(dllexport) MY_API int dml_main(char* input_video_path, cha
                 {
                     std::unique_lock<std::mutex> lock(queue_mutex);
                     // 1秒間待っても返事がなければタイムアウトとする
-                    if (!queue_cv.wait_for(lock, std::chrono::milliseconds(3000), [&]() {
+                    if (!queue_cv.wait_for(lock, std::chrono::milliseconds(30000), [&]() {
                         return !frame_queue.empty() || finished_reading;
                         })) {
                         // タイムアウト時、書き込み中なら終了しない
@@ -1438,7 +1438,7 @@ extern "C" __declspec(dllexport) MY_API int trt_main(char* input_video_path, cha
                 {
                     std::unique_lock<std::mutex> lock(queue_mutex);
                     // 1秒間待ってもデータがなければタイムアウトとして終了する
-                    if (!queue_cv.wait_for(lock, std::chrono::milliseconds(3000), [&]() {
+                    if (!queue_cv.wait_for(lock, std::chrono::milliseconds(30000), [&]() {
                         return !frame_queue.empty() || finished_reading;
                         })) {
                         // タイムアウト時、書き込み中なら終了しない
