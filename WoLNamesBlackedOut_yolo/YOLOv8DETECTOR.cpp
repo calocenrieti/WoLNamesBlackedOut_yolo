@@ -983,7 +983,7 @@ extern "C" __declspec(dllexport) MY_API int dml_main(char* input_video_path, cha
     std::mutex queue_mutex;
     std::condition_variable queue_cv;
     bool finished_reading = false;
-    const int max_queue_size = 500; // 適宜設定
+    const int max_queue_size = 100; // 適宜設定
 
      // 読み取りスレッド：ffmpeg_input の出力（raw video）を読み込む
     std::thread read_thread([&]() {
@@ -1027,7 +1027,7 @@ extern "C" __declspec(dllexport) MY_API int dml_main(char* input_video_path, cha
                 {
                     std::unique_lock<std::mutex> lock(queue_mutex);
                     // 1秒間待っても返事がなければタイムアウトとする
-                    if (!queue_cv.wait_for(lock, std::chrono::milliseconds(30000), [&]() {
+                    if (!queue_cv.wait_for(lock, std::chrono::milliseconds(2000), [&]() {
                         return !frame_queue.empty() || finished_reading;
                         })) {
                         // タイムアウト時、書き込み中なら終了しない
@@ -1314,7 +1314,7 @@ extern "C" __declspec(dllexport) MY_API int trt_main(char* input_video_path, cha
     if (runtime == nullptr) { return false; }
 
     const int batch_size = 16; // バッチサイズを設定
-    const size_t max_queue_size = 500; // キューの最大サイズを設定
+    const size_t max_queue_size = 100; // キューの最大サイズを設定
 
     // ローカルフォルダのパスを取得
     auto localFolder = ApplicationData::Current().LocalFolder();
@@ -1438,7 +1438,7 @@ extern "C" __declspec(dllexport) MY_API int trt_main(char* input_video_path, cha
                 {
                     std::unique_lock<std::mutex> lock(queue_mutex);
                     // 1秒間待ってもデータがなければタイムアウトとして終了する
-                    if (!queue_cv.wait_for(lock, std::chrono::milliseconds(30000), [&]() {
+                    if (!queue_cv.wait_for(lock, std::chrono::milliseconds(2000), [&]() {
                         return !frame_queue.empty() || finished_reading;
                         })) {
                         // タイムアウト時、書き込み中なら終了しない
