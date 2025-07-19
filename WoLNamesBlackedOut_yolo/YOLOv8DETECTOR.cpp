@@ -940,7 +940,8 @@ std::string GetMyDllDirectory() {
 
 //DirectMLを使用した物体検出処理
 //extern "C" __declspec(dllexport) MY_API int dml_main(char* input_video_path, char* output_video_path, char* codec, char* hwaccel, int width, int height, int fps, char* color_primaries, RectInfo* rects, int count, ColorInfo name_color, ColorInfo fixframe_color, bool copyright, char* blacked_type,char* fixframe_type,int blacked_param,int fixframe_param)
-extern "C" __declspec(dllexport) MY_API int dml_main(char* input_video_path, char* output_video_path, char* codec, char* hwaccel, int width, int height, int fps, char* color_primaries, RectInfo* rects, int count, ColorInfo name_color, ColorInfo fixframe_color, bool copyright, char* blacked_type, char* fixframe_type, int blacked_param, int fixframe_param, char* bitrate)
+//extern "C" __declspec(dllexport) MY_API int dml_main(char* input_video_path, char* output_video_path, char* codec, char* hwaccel, int width, int height, int fps, char* color_primaries, RectInfo* rects, int count, ColorInfo name_color, ColorInfo fixframe_color, bool copyright, char* blacked_type, char* fixframe_type, int blacked_param, int fixframe_param, char* bitrate)
+extern "C" __declspec(dllexport) MY_API int dml_main(char* input_video_path, char* output_video_path, char* codec, char* hwaccel, int width, int height, int fps, char* color_primaries, RectInfo* rects, int count, ColorInfo name_color, ColorInfo fixframe_color, bool copyright, char* blacked_type, char* fixframe_type, int blacked_param, int fixframe_param, char* bitrate, char* preset)
 {
     const char* model_path = "my_yolov8m_s.onnx";
 
@@ -973,7 +974,8 @@ extern "C" __declspec(dllexport) MY_API int dml_main(char* input_video_path, cha
         //" -r " + std::to_string(fps) + " -i pipe:0 -movflags faststart -pix_fmt yuv420p -vcodec " + std::string(codec) +
          " -r " + std::to_string(fps) + " -i pipe:0 -pix_fmt yuv420p -vcodec " + std::string(codec) +
         //" -b:v 11M -preset slow \"" + std::string(output_video_path) + "\"";
-        " -b:v " + std::string(bitrate) + " -preset slow \"" + std::string(output_video_path) + "\"";
+        //" -b:v " + std::string(bitrate) + " -preset slow \"" + std::string(output_video_path) + "\"";
+        " -b:v " + std::string(bitrate) + " -preset " + std::string(preset) + " \"" + std::string(output_video_path) + "\"";
 
     cv::Mat current_frame;
     cv::Mat processed_frame;
@@ -1298,7 +1300,8 @@ void postprocess(float* rst, int batch_size, std::vector<cv::Mat>& images, std::
 
 // TensorRTを使用した物体検出処理
 //extern "C" __declspec(dllexport) MY_API int trt_main(char* input_video_path, char* output_video_path, char* codec, char* hwaccel, int width, int height, int fps, char* color_primaries, RectInfo* rects, int count, ColorInfo name_color, ColorInfo fixframe_color, bool copyright, char* blacked_type, char* fixframe_type, int blacked_param, int fixframe_param)
-extern "C" __declspec(dllexport) MY_API int trt_main(char* input_video_path, char* output_video_path, char* codec, char* hwaccel, int width, int height, int fps, char* color_primaries, RectInfo* rects, int count, ColorInfo name_color, ColorInfo fixframe_color, bool copyright, char* blacked_type, char* fixframe_type, int blacked_param, int fixframe_param, char* bitrate)
+//extern "C" __declspec(dllexport) MY_API int trt_main(char* input_video_path, char* output_video_path, char* codec, char* hwaccel, int width, int height, int fps, char* color_primaries, RectInfo* rects, int count, ColorInfo name_color, ColorInfo fixframe_color, bool copyright, char* blacked_type, char* fixframe_type, int blacked_param, int fixframe_param, char* bitrate)
+extern "C" __declspec(dllexport) MY_API int trt_main(char* input_video_path, char* output_video_path, char* codec, char* hwaccel, int width, int height, int fps, char* color_primaries, RectInfo* rects, int count, ColorInfo name_color, ColorInfo fixframe_color, bool copyright, char* blacked_type, char* fixframe_type, int blacked_param, int fixframe_param, char* bitrate, char* preset)
 {
     using namespace winrt::Windows::Storage;
 
@@ -1385,7 +1388,8 @@ extern "C" __declspec(dllexport) MY_API int trt_main(char* input_video_path, cha
         //" -r " + std::to_string(fps) + " -i pipe:0 -movflags faststart -pix_fmt yuv420p -vcodec " + std::string(codec) +
         " -r " + std::to_string(fps) + " -i pipe:0 -pix_fmt yuv420p -vcodec " + std::string(codec) +
         //" -b:v 11M -preset slow \"" + std::string(output_video_path) + "\"";
-        " -b:v " + std::string(bitrate) + " -preset slow \"" + std::string(output_video_path) + "\"";
+        //" -b:v " + std::string(bitrate) + " -preset slow \"" + std::string(output_video_path) + "\"";
+        " -b:v " + std::string(bitrate) + " -preset " + std::string(preset)+ " \"" + std::string(output_video_path) + "\"";
 
     cv::Mat current_frame;
     cv::Mat processed_frame;
