@@ -5,6 +5,7 @@
 #include <optional>
 #include <vector>
 #include <fstream>
+#include <Windows.h>
 #include <winrt/Windows.Storage.h>
 #include <queue>
 #include <mutex>
@@ -969,7 +970,8 @@ extern "C" __declspec(dllexport) MY_API int dml_main(char* input_video_path, cha
     }
 
     std::string ffmpeg_output_cmd = std::string(quotedFfmpegExePath) + " -loglevel quiet -y -f rawvideo -pix_fmt bgr24 -s " + std::to_string(width) + "x" + std::to_string(height) +
-        " -r " + std::to_string(fps) + " -i pipe:0 -movflags faststart -pix_fmt yuv420p -vcodec " + std::string(codec) +
+        //" -r " + std::to_string(fps) + " -i pipe:0 -movflags faststart -pix_fmt yuv420p -vcodec " + std::string(codec) +
+         " -r " + std::to_string(fps) + " -i pipe:0 -pix_fmt yuv420p -vcodec " + std::string(codec) +
         //" -b:v 11M -preset slow \"" + std::string(output_video_path) + "\"";
         " -b:v " + std::string(bitrate) + " -preset slow \"" + std::string(output_video_path) + "\"";
 
@@ -1334,6 +1336,7 @@ extern "C" __declspec(dllexport) MY_API int trt_main(char* input_video_path, cha
     auto plan = load_engine_file(engineFilePathCStr);
 
     auto engine = std::unique_ptr<nvinfer1::ICudaEngine>(runtime->deserializeCudaEngine(plan.data(), plan.size()));
+    //auto engine = (runtime->deserializeCudaEngine(plan.data(), plan.size()));
     if (engine == nullptr) { return false; }
 
     auto context = std::unique_ptr<nvinfer1::IExecutionContext>(engine->createExecutionContext());
@@ -1379,7 +1382,8 @@ extern "C" __declspec(dllexport) MY_API int trt_main(char* input_video_path, cha
     }
 
     std::string ffmpeg_output_cmd = std::string(quotedFfmpegExePath) + " -loglevel quiet -y -f rawvideo -pix_fmt bgr24 -s " + std::to_string(width) + "x" + std::to_string(height) +
-        " -r " + std::to_string(fps) + " -i pipe:0 -movflags faststart -pix_fmt yuv420p -vcodec " + std::string(codec) +
+        //" -r " + std::to_string(fps) + " -i pipe:0 -movflags faststart -pix_fmt yuv420p -vcodec " + std::string(codec) +
+        " -r " + std::to_string(fps) + " -i pipe:0 -pix_fmt yuv420p -vcodec " + std::string(codec) +
         //" -b:v 11M -preset slow \"" + std::string(output_video_path) + "\"";
         " -b:v " + std::string(bitrate) + " -preset slow \"" + std::string(output_video_path) + "\"";
 
