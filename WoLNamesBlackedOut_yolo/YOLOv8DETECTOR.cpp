@@ -1,7 +1,7 @@
+#include "pch.h"
 #include <memory>
 #include <iostream>
 #include <Windows.h>
-#include "pch.h"
 #include <optional>
 #include <vector>
 #include <fstream>
@@ -10,6 +10,7 @@
 #include <queue>
 #include <mutex>
 #include <thread>
+#include <winrt/base.h>
 
 #define MY_MODULE_EXPORTS
 #ifdef MY_MODULE_EXPORTS
@@ -25,6 +26,7 @@ std::atomic<bool> cancelFlag = false;
 constexpr int MIN_VALID_RECT_SIZE = 10;
 constexpr int DEFAULT_MOSAIC_FACTOR = 10;
 constexpr int DEFAULT_BLUR_FACTOR = 5;
+cv::Mat c_sqex_image = cv::imread("C_SQUARE_ENIX.png");
 
 class MY_API YOLOv8Detector {
 public:
@@ -39,12 +41,12 @@ private:
 
     std::mutex mutex_; // std::mutex型で宣言
 public:
-    YOLOv8Detector();
-    ~YOLOv8Detector();
+    __stdcall YOLOv8Detector();
+    __stdcall ~YOLOv8Detector();
     operator bool() const;
-    bool loadModel(const char* model_path);
-    std::optional<std::vector<BoundingBox>> inference(const cv::Mat& image);
-    bool PreProcess2(cv::Mat& iImg, int targetWidth, int targetHeight, cv::Mat& oImg);
+    bool __stdcall loadModel(const char* model_path);
+    std::optional<std::vector<BoundingBox>> __stdcall inference(const cv::Mat& image);
+    bool __stdcall PreProcess2(cv::Mat& iImg, int targetWidth, int targetHeight, cv::Mat& oImg);
     float resizeScales;
 };
 
@@ -269,9 +271,9 @@ struct ColorInfo {
 };
 
 // フレームカウントのグローバル変数
-extern "C" __declspec(dllexport) int total_frame_count = 0;
+extern "C" __declspec(dllexport) int __stdcall total_frame_count = 0;
 // 必要に応じて初期化コードを追加
-extern "C" __declspec(dllexport) int get_total_frame_count() {
+extern "C" __declspec(dllexport) int __stdcall get_total_frame_count() {
     return total_frame_count;
 }
 
@@ -345,7 +347,7 @@ void applyBlur(cv::Mat& frame, const cv::Rect& roiRect, int kernelSize = 15) {
 }
 
 // preview_api関数を宣言
-extern "C" __declspec(dllexport) MY_API int preview_api(const char* image_path, RectInfo* rects, int count, ColorInfo name_color, ColorInfo fixframe_color, bool copyright, char* blacked_type, char* fixframe_type, int blacked_param, int fixframe_param)
+extern "C" __declspec(dllexport) MY_API int __stdcall preview_api(const char* image_path, RectInfo* rects, int count, ColorInfo name_color, ColorInfo fixframe_color, bool copyright, char* blacked_type, char* fixframe_type, int blacked_param, int fixframe_param)
 {
 	std::string imagePathStr(image_path);
     // モデルファイルのパス
@@ -738,7 +740,7 @@ void run_ffmpeg_output(const std::string& cmd, std::function<void(HANDLE)> func)
 
 // DLL から公開する関数（エクスポート指定をするなど）
 extern "C" __declspec(dllexport)
-bool CancelFfmpegProcesses(void) {
+bool __stdcall CancelFfmpegProcesses(void) {
     bool result = true;
     cancelFlag = true;
     // 入力用プロセスが存在していれば終了
@@ -891,7 +893,7 @@ void dml_process_frame(const cv::Mat& in_frame, cv::Mat& out_frame, YOLOv8Detect
     if (copyright == true)
     {
         // 貼り付ける画像を読み込む
-        cv::Mat c_sqex_image = cv::imread("C_SQUARE_ENIX.png");
+        //cv::Mat c_sqex_image = cv::imread("C_SQUARE_ENIX.png");
         if (!c_sqex_image.empty()) {
             // 画像の幅と高さ
             int w = out_frame.cols;
@@ -939,9 +941,7 @@ std::string GetMyDllDirectory() {
 }
 
 //DirectMLを使用した物体検出処理
-//extern "C" __declspec(dllexport) MY_API int dml_main(char* input_video_path, char* output_video_path, char* codec, char* hwaccel, int width, int height, int fps, char* color_primaries, RectInfo* rects, int count, ColorInfo name_color, ColorInfo fixframe_color, bool copyright, char* blacked_type,char* fixframe_type,int blacked_param,int fixframe_param)
-//extern "C" __declspec(dllexport) MY_API int dml_main(char* input_video_path, char* output_video_path, char* codec, char* hwaccel, int width, int height, int fps, char* color_primaries, RectInfo* rects, int count, ColorInfo name_color, ColorInfo fixframe_color, bool copyright, char* blacked_type, char* fixframe_type, int blacked_param, int fixframe_param, char* bitrate)
-extern "C" __declspec(dllexport) MY_API int dml_main(char* input_video_path, char* output_video_path, char* codec, char* hwaccel, int width, int height, int fps, char* color_primaries, RectInfo* rects, int count, ColorInfo name_color, ColorInfo fixframe_color, bool copyright, char* blacked_type, char* fixframe_type, int blacked_param, int fixframe_param, char* bitrate, char* preset)
+extern "C" __declspec(dllexport) MY_API int __stdcall dml_main(char* input_video_path, char* output_video_path, char* codec, char* hwaccel, int width, int height, int fps, char* color_primaries, RectInfo* rects, int count, ColorInfo name_color, ColorInfo fixframe_color, bool copyright, char* blacked_type, char* fixframe_type, int blacked_param, int fixframe_param, char* bitrate, char* preset)
 {
     const char* model_path = "my_yolov8m_s.onnx";
 
@@ -971,10 +971,7 @@ extern "C" __declspec(dllexport) MY_API int dml_main(char* input_video_path, cha
     }
 
     std::string ffmpeg_output_cmd = std::string(quotedFfmpegExePath) + " -loglevel quiet -y -f rawvideo -pix_fmt bgr24 -s " + std::to_string(width) + "x" + std::to_string(height) +
-        //" -r " + std::to_string(fps) + " -i pipe:0 -movflags faststart -pix_fmt yuv420p -vcodec " + std::string(codec) +
          " -r " + std::to_string(fps) + " -i pipe:0 -pix_fmt yuv420p -vcodec " + std::string(codec) +
-        //" -b:v 11M -preset slow \"" + std::string(output_video_path) + "\"";
-        //" -b:v " + std::string(bitrate) + " -preset slow \"" + std::string(output_video_path) + "\"";
         " -b:v " + std::string(bitrate) + " -preset " + std::string(preset) + " \"" + std::string(output_video_path) + "\"";
 
     cv::Mat current_frame;
@@ -1158,7 +1155,6 @@ void LetterBox(const cv::Mat& image, cv::Mat& outImage, cv::Vec4d& params, const
     cv::copyMakeBorder(outImage, outImage, top, bottom, left, right, cv::BORDER_CONSTANT, color);
 }
 
-//void postprocess(float(&rst)[1][5][33600], cv::Mat& img, cv::Vec4d params);
 void postprocess(float* rst, int batch_size, std::vector<cv::Mat>& images, std::vector<cv::Vec4d>& params, RectInfo* rects, int count, ColorInfo name_color, ColorInfo fixframe_color, bool copyright, char* blacked_type, char* fixframe_type, int blacked_param, int fixframe_param)
 {
     // OpenCV の色を作成
@@ -1284,7 +1280,7 @@ void postprocess(float* rst, int batch_size, std::vector<cv::Mat>& images, std::
         if (copyright == true)
         {
             // 貼り付ける画像を読み込む
-            cv::Mat c_sqex_image = cv::imread("C_SQUARE_ENIX.png");
+            //cv::Mat c_sqex_image = cv::imread("C_SQUARE_ENIX.png");
             if (!c_sqex_image.empty()) {
                 // 画像の幅と高さ
                 int w = images[b].cols;
@@ -1299,9 +1295,7 @@ void postprocess(float* rst, int batch_size, std::vector<cv::Mat>& images, std::
 
 
 // TensorRTを使用した物体検出処理
-//extern "C" __declspec(dllexport) MY_API int trt_main(char* input_video_path, char* output_video_path, char* codec, char* hwaccel, int width, int height, int fps, char* color_primaries, RectInfo* rects, int count, ColorInfo name_color, ColorInfo fixframe_color, bool copyright, char* blacked_type, char* fixframe_type, int blacked_param, int fixframe_param)
-//extern "C" __declspec(dllexport) MY_API int trt_main(char* input_video_path, char* output_video_path, char* codec, char* hwaccel, int width, int height, int fps, char* color_primaries, RectInfo* rects, int count, ColorInfo name_color, ColorInfo fixframe_color, bool copyright, char* blacked_type, char* fixframe_type, int blacked_param, int fixframe_param, char* bitrate)
-extern "C" __declspec(dllexport) MY_API int trt_main(char* input_video_path, char* output_video_path, char* codec, char* hwaccel, int width, int height, int fps, char* color_primaries, RectInfo* rects, int count, ColorInfo name_color, ColorInfo fixframe_color, bool copyright, char* blacked_type, char* fixframe_type, int blacked_param, int fixframe_param, char* bitrate, char* preset)
+extern "C" __declspec(dllexport) MY_API int __stdcall trt_main(char* input_video_path, char* output_video_path, char* codec, char* hwaccel, int width, int height, int fps, char* color_primaries, RectInfo* rects, int count, ColorInfo name_color, ColorInfo fixframe_color, bool copyright, char* blacked_type, char* fixframe_type, int blacked_param, int fixframe_param, char* bitrate, char* preset)
 {
     using namespace winrt::Windows::Storage;
 
@@ -1318,8 +1312,8 @@ extern "C" __declspec(dllexport) MY_API int trt_main(char* input_video_path, cha
     std::unique_ptr<nvinfer1::IRuntime> runtime = std::unique_ptr<nvinfer1::IRuntime>(nvinfer1::createInferRuntime(logger));
     if (runtime == nullptr) { return false; }
 
-    const int batch_size = 16; // バッチサイズを設定
-    const size_t max_queue_size = 100; // キューの最大サイズを設定
+    const int max_batch =16; // 最大バッチサイズを設定 (固定)
+    const size_t max_queue_size =100; // キューの最大サイズを設定
 
     // ローカルフォルダのパスを取得
     auto localFolder = ApplicationData::Current().LocalFolder();
@@ -1327,36 +1321,60 @@ extern "C" __declspec(dllexport) MY_API int trt_main(char* input_video_path, cha
 
     // アプリケーション専用のフォルダパスを組み立てる
     std::wstring appFolderPath = std::wstring(localAppDataPath) + std::wstring{ L"\\WoLNamesBlackedOut" };
-    std::wstring engineFilePath = appFolderPath + std::wstring{ L"\\my_yolov8m_s_20250525.engine" };
+    std::wstring engineFilePath = appFolderPath + std::wstring{ L"\\my_yolov8m_s_20251004A.engine" };
+    std::wstring casheFilePath = appFolderPath + std::wstring{ L"\\my_yolov8m_s_20251004A.cashe" };
 
-    std::string engineFilePathStr(engineFilePath.length(), 0);
+    std::string engineFilePathStr(engineFilePath.length(),0);
     std::transform(engineFilePath.begin(), engineFilePath.end(), engineFilePathStr.begin(), [](wchar_t c) {
-        return (char)c;
-        });
+    return (char)c;
+    });
     const char* engineFilePathCStr = engineFilePathStr.c_str();
 
-    //std::string file_path = "my_yolov8m.engine";
+    std::string casheFilePathStr(casheFilePath.length(),0);
+    std::transform(casheFilePath.begin(), casheFilePath.end(), casheFilePathStr.begin(), [](wchar_t c) {
+    return (char)c;
+    });
+    const char* casheFilePathCStr = casheFilePathStr.c_str();
+
+	//エンジンファイルの読み込み
     auto plan = load_engine_file(engineFilePathCStr);
 
+    //キャッシュファイルの有無確認用
+    std::ifstream ifs(casheFilePathStr);
+
     auto engine = std::unique_ptr<nvinfer1::ICudaEngine>(runtime->deserializeCudaEngine(plan.data(), plan.size()));
-    //auto engine = (runtime->deserializeCudaEngine(plan.data(), plan.size()));
     if (engine == nullptr) { return false; }
 
-    auto context = std::unique_ptr<nvinfer1::IExecutionContext>(engine->createExecutionContext());
+    //ランタイムキャッシュ利用
+    nvinfer1::IRuntimeConfig* runtimeConfig = engine->createRuntimeConfig();
+    runtimeConfig->setExecutionContextAllocationStrategy(nvinfer1::ExecutionContextAllocationStrategy::kSTATIC);
+	//runtimeConfig->setCudaGraphStrategy(nvinfer1::CudaGraphStrategy::kWHOLE_GRAPH_CAPTURE);   //TensorRT-RTX1.20以降
+    nvinfer1::IRuntimeCache* runtimeCache = runtimeConfig->createRuntimeCache();
+
+    if (ifs.good()) { //キャッシュがある場合、キャッシュを読み込む
+        auto casheplan = load_engine_file(casheFilePathCStr);
+        runtimeCache->deserialize(
+            casheplan.data(), casheplan.size());
+    }
+
+    runtimeConfig->setRuntimeCache(*runtimeCache);
+    runtimeConfig->setCudaGraphStrategy(nvinfer1::CudaGraphStrategy::kWHOLE_GRAPH_CAPTURE);   //TensorRT-RTX1.20以降
+    auto context = std::unique_ptr<nvinfer1::IExecutionContext>(engine->createExecutionContext(runtimeConfig));
     if (context == nullptr) { return false; }
 
     auto idims = engine->getTensorShape("images");
     auto odims = engine->getTensorShape("output0");
-    nvinfer1::Dims4 inputDims = { batch_size, idims.d[1], idims.d[2], idims.d[3] };
-    nvinfer1::Dims3 outputDims = { batch_size, idims.d[1], idims.d[2] };
+    nvinfer1::Dims4 inputDims = { max_batch, idims.d[1], idims.d[2], idims.d[3] };
+    nvinfer1::Dims3 outputDims = { max_batch, odims.d[1], odims.d[2] };
     context->setInputShape("images", inputDims);
 
     void* buffers[2];
-    const int inputIndex = 0;
-    const int outputIndex = 1;
+    const int inputIndex =0;
+    const int outputIndex =1;
 
-    cudaMalloc(&buffers[inputIndex], batch_size * idims.d[1] * idims.d[2] * idims.d[3] * sizeof(float));
-    cudaMalloc(&buffers[outputIndex], batch_size * odims.d[1] * odims.d[2] * sizeof(float));
+    // GPUバッファは max_batch 基準で確保
+    cudaMalloc(&buffers[inputIndex], max_batch * idims.d[1] * idims.d[2] * idims.d[3] * sizeof(float));
+    cudaMalloc(&buffers[outputIndex], max_batch * odims.d[1] * odims.d[2] * sizeof(float));
 
     context->setTensorAddress("images", buffers[inputIndex]);
     context->setTensorAddress("output0", buffers[outputIndex]);
@@ -1385,17 +1403,15 @@ extern "C" __declspec(dllexport) MY_API int trt_main(char* input_video_path, cha
     }
 
     std::string ffmpeg_output_cmd = std::string(quotedFfmpegExePath) + " -loglevel quiet -y -f rawvideo -pix_fmt bgr24 -s " + std::to_string(width) + "x" + std::to_string(height) +
-        //" -r " + std::to_string(fps) + " -i pipe:0 -movflags faststart -pix_fmt yuv420p -vcodec " + std::string(codec) +
         " -r " + std::to_string(fps) + " -i pipe:0 -pix_fmt yuv420p -vcodec " + std::string(codec) +
-        //" -b:v 11M -preset slow \"" + std::string(output_video_path) + "\"";
-        //" -b:v " + std::string(bitrate) + " -preset slow \"" + std::string(output_video_path) + "\"";
         " -b:v " + std::string(bitrate) + " -preset " + std::string(preset)+ " \"" + std::string(output_video_path) + "\"";
 
     cv::Mat current_frame;
     cv::Mat processed_frame;
     total_frame_count = 0;
 
-    float* rst = new float[batch_size * 5 * 19320];
+    // ホスト出力バッファも max_batch 基準で確保
+    float* rst = new float[max_batch *5 *19320];
 
     std::queue<cv::Mat> frame_queue;
     std::mutex queue_mutex;
@@ -1420,7 +1436,7 @@ extern "C" __declspec(dllexport) MY_API int trt_main(char* input_video_path, cha
                 }
                 queue_cv.notify_one();
             }
-            // ここでパイプを閉じることで、ffmpeg に EOF を通知する
+            //ここでパイプを閉じることで、ffmpeg に EOF を通知する
             std::cerr << "Read thread: closing input pipe handle to signal EOF to ffmpeg." << std::endl;
             CloseHandle(input_pipe);
             {
@@ -1432,7 +1448,7 @@ extern "C" __declspec(dllexport) MY_API int trt_main(char* input_video_path, cha
     });
 
     // 少し待機する（例：200ミリ秒の遅延）
-    std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
 
 
     // 書き込みスレッド：ffmpeg_output の入力側へ処理済みフレームを書き込む
@@ -1445,17 +1461,17 @@ extern "C" __declspec(dllexport) MY_API int trt_main(char* input_video_path, cha
                 std::vector<cv::Vec4d> params;
                 {
                     std::unique_lock<std::mutex> lock(queue_mutex);
-                    // 1秒間待ってもデータがなければタイムアウトとして終了する
+                    //1秒間待ってもデータがなければタイムアウトとして終了する
                     if (!queue_cv.wait_for(lock, std::chrono::milliseconds(2000), [&]() {
                         return !frame_queue.empty() || finished_reading;
-                        })) {
+                    })) {
                         // タイムアウト時、書き込み中なら終了しない
                         if (writing_frame) {
                             std::cerr << "Write thread: wait_for timed out, but writing in progress. Continue waiting." << std::endl;
                             continue;
                         }
                         else {
-                            std::cerr << "Write thread: wait_for timed out (no data for 3 seconds, not writing). Exiting." << std::endl;
+                            std::cerr << "Write thread: wait_for timed out (no data for3 seconds, not writing). Exiting." << std::endl;
                             break;
                         }
                     }
@@ -1463,7 +1479,7 @@ extern "C" __declspec(dllexport) MY_API int trt_main(char* input_video_path, cha
                         std::cerr << "Exit write loop: frame queue empty and finished_reading is true." << std::endl;
                         break;
                     }
-                    while (!frame_queue.empty() && frames.size() < batch_size) {
+                    while (!frame_queue.empty() && frames.size() < max_batch) {
                         frames.push_back(frame_queue.front());
                         frame_queue.pop();
                     }
@@ -1477,29 +1493,58 @@ extern "C" __declspec(dllexport) MY_API int trt_main(char* input_video_path, cha
                 for (auto& frame : frames) {
                     cv::Mat LetterBoxImg;
                     cv::Vec4d param;
-                    LetterBox(frame, LetterBoxImg, param, cv::Size(1280, 736));
+                    LetterBox(frame, LetterBoxImg, param, cv::Size(1280,736));
                     params.push_back(param);
 
                     cv::Mat blob;
-                    cv::dnn::blobFromImage(LetterBoxImg, blob, 1 / 255.0, cv::Size(1280, 736), cv::Scalar(0, 0, 0), true, false, CV_32F);
+                    cv::dnn::blobFromImage(LetterBoxImg, blob,1 /255.0, cv::Size(1280,736), cv::Scalar(0,0,0), true, false, CV_32F);
                     blobs.push_back(blob);
                 }
 
-                for (int i = 0; i < blobs.size(); ++i) {
-                    cudaMemcpyAsync(static_cast<float*>(buffers[inputIndex]) + i * 3 * 1280 * 736, blobs[i].data, 3 * 1280 * 736 * sizeof(float), cudaMemcpyHostToDevice, stream);
+                int n = static_cast<int>(blobs.size()); // 実際のバッチサイズ
+
+                // 実バッチに合わせて入力形状を設定
+                nvinfer1::Dims4 dynamicInputDims = { n, idims.d[1], idims.d[2], idims.d[3] };
+                context->setInputShape("images", dynamicInputDims);
+
+                // ホスト -> デバイスへ n 件分コピー
+                for (int i =0; i < n; ++i) {
+                    cudaMemcpyAsync(static_cast<float*>(buffers[inputIndex]) + i * idims.d[1] * idims.d[2] * idims.d[3], blobs[i].data, idims.d[1] * idims.d[2] * idims.d[3] * sizeof(float), cudaMemcpyHostToDevice, stream);
                 }
+
+//                // 実行
+//                // select optimization profile based on available profiles (safe fallback)
+//                int profileIdx =0;
+//                int nbProfiles =1;
+//#if defined(NDEBUG)
+// (void)nbProfiles;
+//#endif
+//try {
+// nbProfiles = engine->getNbOptimizationProfiles();
+//} catch (...) {
+// nbProfiles =1;
+//}
+//if (nbProfiles <=0) profileIdx =0;
+//else profileIdx = std::min(n -1, nbProfiles -1);
+
+                //context->setOptimizationProfileAsync(profileIdx, stream);
                 context->setOptimizationProfileAsync(0, stream);
                 context->enqueueV3(stream);
                 cudaStreamSynchronize(stream);
 
-                cudaMemcpyAsync(rst, buffers[outputIndex], batch_size * 5 * 19320 * sizeof(float), cudaMemcpyDeviceToHost, stream);
+                // デバイス -> ホストへ n 件分だけコピー
+                size_t outPerImg = odims.d[1] * odims.d[2];
+                cudaMemcpyAsync(rst, buffers[outputIndex], n * outPerImg * sizeof(float), cudaMemcpyDeviceToHost, stream);
+                cudaStreamSynchronize(stream);
 
-                postprocess(rst, frames.size(), frames, params, rects, count, name_color, fixframe_color,  copyright, blacked_type, fixframe_type, blacked_param, fixframe_param);
+                // 後処理へ実バッチ数を渡す
+                postprocess(rst, n, frames, params, rects, count, name_color, fixframe_color, copyright, blacked_type, fixframe_type, blacked_param, fixframe_param);
                 for (auto& frame : frames) {
                     WriteFrameToPipe(output_pipe, frame);
                 }
                 writing_frame = false; // 書き込み終了
-                total_frame_count += frames.size();
+                //total_frame_count += frames.size();
+                total_frame_count += n;
                 queue_cv.notify_one();
             }
             queue_cv.notify_one();
@@ -1512,6 +1557,23 @@ extern "C" __declspec(dllexport) MY_API int trt_main(char* input_video_path, cha
     read_thread.join();
     write_thread.join();
 
+	if (!ifs.good()) { //キャッシュがない場合、キャッシュを保存
+        // get the runtime config from the execution context
+        nvinfer1::IRuntimeConfig* runtimeConfig1 = context->getRuntimeConfig();
+
+        // get the runtime cache from the runtime config
+        nvinfer1::IRuntimeCache* runtimeCache1 = runtimeConfig1->getRuntimeCache();
+
+        // serialize the cache into a memory blob
+        nvinfer1::IHostMemory* hostMemory = runtimeCache1->serialize();
+        assert(hostMemory != nullptr);
+
+        // save the serialized cache to disk
+        std::ofstream engine_file(casheFilePathCStr, std::ios::binary);
+        //assert(engine_file.is_open() && "Failed to open engine file");
+        engine_file.write((char*)hostMemory->data(), hostMemory->size());
+        engine_file.close();
+    }
 
     delete[] rst;
     cudaStreamDestroy(stream);
