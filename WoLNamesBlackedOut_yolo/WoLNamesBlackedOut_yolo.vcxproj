@@ -75,8 +75,8 @@
   </ImportGroup>
   <PropertyGroup Label="UserMacros" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
-    <ExternalIncludePath>D:\TensorRT-RTX-1.2.0.44\include;D:\opencv_build413a\install\include;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.9\include;$(ExternalIncludePath)</ExternalIncludePath>
-    <LibraryPath>D:\TensorRT-RTX-1.2.0.44\lib;D:\opencv_build413a\install\x64\vc17\lib;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.9\lib\x64;$(LibraryPath)</LibraryPath>
+    <ExternalIncludePath>D:\TensorRT-RTX-1.3.0.35\include;D:\opencv-4.13.0_build\install\include;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.9\include;$(ExternalIncludePath)</ExternalIncludePath>
+    <LibraryPath>D:\TensorRT-RTX-1.3.0.35\lib;D:\opencv-4.13.0_build\install\x64\vc17\lib;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.9\lib\x64;$(LibraryPath)</LibraryPath>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <ExternalIncludePath>D:\TensorRT-10.7.0.23\include;D:\opencv_prebuild\build\include;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.4\include;D:\ffmpeg-N-118368-gf632ab53d9-win64-shared\include;$(VC_IncludePath);$(WindowsSDK_IncludePath);</ExternalIncludePath>
@@ -154,7 +154,7 @@
       <OptimizeReferences>true</OptimizeReferences>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <EnableUAC>false</EnableUAC>
-      <AdditionalDependencies>cudart.lib;cuda.lib;cudart_static.lib;opencv_world4130.lib;tensorrt_rtx_1_2.lib;windowsapp.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>cudart.lib;cuda.lib;cudart_static.lib;opencv_world4130.lib;tensorrt_rtx_1_3.lib;windowsapp.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <LinkTimeCodeGeneration>UseFastLinkTimeCodeGeneration</LinkTimeCodeGeneration>
     </Link>
     <PostBuildEvent>

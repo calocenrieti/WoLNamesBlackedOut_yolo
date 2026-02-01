@@ -11,7 +11,7 @@
 #include <mutex>
 #include <thread>
 #include <winrt/base.h>
-
+#include <numeric>
 #define MY_MODULE_EXPORTS
 #ifdef MY_MODULE_EXPORTS
 #define MY_API __declspec(dllexport)
@@ -64,6 +64,7 @@ struct YOLOv8Detector::Private {
     std::vector<std::string> input_node_name_strings;
     std::vector<std::string> output_node_name_strings;
 
+    bool use_directml = false; // DirectML を使えるかどうかのフラグ
 };
 
 
@@ -71,11 +72,20 @@ YOLOv8Detector::YOLOv8Detector()
     : m(std::make_unique<Private>()) // std::make_uniqueを使用
 {
     try {
-        //std::cout << "Initializing memory_info..." << std::endl;
         m->memory_info = std::make_unique<Ort::MemoryInfo>(Ort::MemoryInfo::CreateCpu(OrtDeviceAllocator, OrtMemTypeCPU));
-        //std::cout << "memory_info initialized." << std::endl;
 
-        Ort::GetApi().SessionOptionsAppendExecutionProvider(m->session_options, "DML", nullptr, nullptr, 0);
+        // DirectML (DML) プロバイダを追加してみる（失敗したら CPU フォールバック）
+        try {
+            // 既存コードを活かして試行
+            Ort::GetApi().SessionOptionsAppendExecutionProvider(m->session_options, "DML", nullptr, nullptr, 0);
+            m->use_directml = true;
+            //std::cout << "DirectML execution provider appended." << std::endl;
+        }
+        catch (const Ort::Exception&) {
+            // DML が利用できない／初期化に失敗した -> CPU を使用する
+            m->use_directml = false;
+            //std::cerr << "DirectML not available, falling back to CPU execution provider." << std::endl;
+        }
 
         m->session_options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
         m->session_options.SetLogSeverityLevel(3);
@@ -84,7 +94,7 @@ YOLOv8Detector::YOLOv8Detector()
         //std::cout << "Session options configured." << std::endl;
     }
     catch (const std::exception& e) {
-        std::cerr << "Exception during initialization: " << e.what() << std::endl;
+        //std::cerr << "Exception during initialization: " << e.what() << std::endl;
     }
 }
 
@@ -100,17 +110,41 @@ YOLOv8Detector::operator bool() const
 bool YOLOv8Detector::loadModel(const char* model_path)
 {
     try {
-        //std::cout << "Loading model..." << std::endl;
-
         // UTF-8からUTF-16 (wchar_t) に変換
         int size_needed = MultiByteToWideChar(CP_UTF8, 0, model_path, -1, NULL, 0);
         std::wstring w_model_path(size_needed, 0);
         MultiByteToWideChar(CP_UTF8, 0, model_path, -1, &w_model_path[0], size_needed);
 
-        //std::cout << "Creating session..." << std::endl;
-        m->session = std::make_unique<Ort::Session>(m->env, w_model_path.c_str(), m->session_options);
+        // まず現在の session_options（DML がセットされている可能性あり）で試す
+        try {
+            m->session = std::make_unique<Ort::Session>(m->env, w_model_path.c_str(), m->session_options);
+            m->use_directml = m->use_directml; // 状態はそのまま
+        }
+        catch (const Ort::Exception& e) {
+            // DML での初期化に失敗した場合は CPU にフォールバックして再試行
+            if (m->use_directml) {
+                try {
+                    Ort::SessionOptions cpu_options;
+                    cpu_options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
+                    cpu_options.SetLogSeverityLevel(3);
+                    cpu_options.SetIntraOpNumThreads(1);
 
-        //std::cout << "Session created." << std::endl;
+                    m->session = std::make_unique<Ort::Session>(m->env, w_model_path.c_str(), cpu_options);
+                    m->use_directml = false;
+                    //std::cerr << "Loaded model with CPU execution provider after DML failure." << std::endl;
+                }
+                catch (const Ort::Exception& e2) {
+                    // CPUでも失敗したら終了
+                    //std::cerr << "Failed to load model with CPU fallback: " << e2.what() << std::endl;
+                    return false;
+                }
+            }
+            else {
+                // DML試行していない状態で失敗したらそのまま失敗
+                //std::cerr << "Failed to load model: " << e.what() << std::endl;
+                return false;
+            }
+        }
 
         m->num_input_nodes = m->session->GetInputCount();
         m->num_output_nodes = m->session->GetOutputCount();
@@ -136,7 +170,7 @@ bool YOLOv8Detector::loadModel(const char* model_path)
         return true;
     }
     catch (const Ort::Exception& e) {
-        std::cerr << "Error: " << e.what() << std::endl;
+        //std::cerr << "Error: " << e.what() << std::endl;
     }
     return false;
 }
@@ -171,9 +205,6 @@ bool YOLOv8Detector::PreProcess2(cv::Mat& iImg, int targetWidth, int targetHeigh
     oImg.copyTo(tempImg(cv::Rect(0, 0, oImg.cols, oImg.rows)));
     oImg = tempImg;
 
-    // カラースペース変換が必要ならここで変換（例：BGR -> RGB）
-    // cv::cvtColor(oImg, oImg, cv::COLOR_BGR2RGB);
-
     return true;
 }
 
@@ -187,7 +218,7 @@ std::optional<std::vector<YOLOv8Detector::BoundingBox>> YOLOv8Detector::inferenc
     std::vector<float> input_tensor_values(N * C * H * W);
 
     cv::Mat resized_img;
-    image.convertTo(resized_img, CV_32F, 1.0 / 255.0); // 正規化
+    image.convertTo(resized_img, CV_32F, 1.0f / 255.0f); // 正規化
 
     float* R = input_tensor_values.data() + H * W * 0;
     float* G = input_tensor_values.data() + H * W * 1;
@@ -209,51 +240,81 @@ std::optional<std::vector<YOLOv8Detector::BoundingBox>> YOLOv8Detector::inferenc
 
     std::vector<YOLOv8Detector::BoundingBox> bboxes;
 
+    // 出力形状を柔軟に扱う
     auto info = output_tensors.front().GetTensorTypeAndShapeInfo();
     std::vector<int64_t> shape = info.GetShape();
+    if (shape.size() != 3) {
+        return bboxes;
+    }
 
-    assert(shape.size() == 3);
-    assert(shape[0] == N);
-    assert(shape[1] > 4);
+    // 判別：yolo26 なら (N, detections, 6)、元の yolov8 形式なら (N, values, count)
+    int64_t batch = shape[0];
+    int64_t dim1 = shape[1];
+    int64_t dim2 = shape[2];
 
-    const int values = shape[1];    //x,y,w,h,class1,class2,    84
-    const int classes = values - 4; //項目からx,y,w,hを引いた数  80
-    const int count = shape[2];	    //グリッド数    8400
+    int64_t detections = 0;
+    int64_t per_det = 0;
+    // case: (N, 300, 6)
+    if (dim2 == 6) {
+        detections = dim1;
+        per_det = dim2;
+    }
+    // case: (N, values, count) 旧コード風
+    else if (dim1 == 6) {
+        detections = dim2;
+        per_det = dim1;
+    }
+    else {
+        // フェールセーフ: treat dim1 as values, dim2 as count (既存ロジック)
+        per_det = static_cast<int>(shape[1]);
+        detections = static_cast<int>(shape[2]);
+    }
 
     float const* output_tensor = output_tensors[0].GetTensorData<float>();
-    float conf_threshold = 0.01;
-    float iou_threshold = 0.5;
+    float score_threshold = 0.15f;
 
-    for (int i = 0; i < count; i++) {
-        auto Value = [&](int index) {
-            return output_tensor[count * index + i];
-            };
+    // バッチ0 を扱う（バッチサポートが必要なら拡張）
+    const float* batch_base = output_tensor; // offset = 0 * detections * per_det
 
-        float x = Value(0) * image.cols / W;
-        float y = Value(1) * image.rows / H;
-        float w = Value(2) * image.cols / W;
-        float h = Value(3) * image.rows / H;
+    for (int64_t i = 0; i < detections; ++i) {
+        const float* det = batch_base + i * per_det;
+        // 必要な要素が6であることを期待
+        if (per_det < 6) continue;
 
-        x = int((x - w / 2) * resizeScales);
-        y = int((y - h / 2) * resizeScales);
-        w = int(w * resizeScales);
-        h = int(h * resizeScales);
+        float score = det[4];
+        if (score <= score_threshold) continue;
 
-        for (int j = 0; j < classes; j++) {
-            YOLOv8Detector::BoundingBox bbox;
-            bbox.score = Value(4 + j);
+        float x1_model = det[0];
+        float y1_model = det[1];
+        float x2_model = det[2];
+        float y2_model = det[3];
+        int class_id = static_cast<int>(det[5]);
 
-            if (bbox.score > 0.01) {
-                bbox.index = j;
-                bbox.rect = cv::Rect(x, y, w, h);
-                bboxes.push_back(bbox);
-            }
-        }
+        // モデル座標 -> 元画像座標
+        // PreProcess2 で resizeScales = original_size / targetSize としているため、
+        // 元座標 = model座標 * resizeScales
+        float x1 = x1_model * resizeScales;
+        float y1 = y1_model * resizeScales;
+        float x2 = x2_model * resizeScales;
+        float y2 = y2_model * resizeScales;
+
+        // 左上・幅高さを正しく計算
+        int left = std::max(0, static_cast<int>(std::round(std::min(x1, x2))));
+        int top = std::max(0, static_cast<int>(std::round(std::min(y1, y2))));
+        int width = static_cast<int>(std::round(std::abs(x2 - x1)));
+        int height = static_cast<int>(std::round(std::abs(y2 - y1)));
+
+        if (width <= 0 || height <= 0) continue;
+
+        YOLOv8Detector::BoundingBox bbox;
+        bbox.score = score;
+        bbox.index = class_id;
+        bbox.rect = cv::Rect(left, top, width, height);
+        bboxes.push_back(bbox);
     }
 
     return bboxes;
 }
-
 
 // 矩形情報の構造体を定義
 struct RectInfo {
@@ -307,15 +368,15 @@ void applyMosaic(cv::Mat& frame, const cv::Rect& roiRect, int mosaicFactor = 10)
     int newHeight = roi.rows / mosaicFactor;
     if (newWidth <= 0 || newHeight <= 0) {
         // サイズが小さすぎる場合は処理しないか、強制的に1ピクセル以上とする
-        std::cerr << "applyMosaic: ROI too small (" << roi.cols << "x" << roi.rows << ")" << std::endl;
+        //std::cerr << "applyMosaic: ROI too small (" << roi.cols << "x" << roi.rows << ")" << std::endl;
         return; // 処理スキップ
     }
 
-    cv::Mat small;
+    cv::Mat frame_small;
     // 小さいサイズにリサイズ（縮小）
-    cv::resize(roi, small, cv::Size(roi.cols / mosaicFactor, roi.rows / mosaicFactor), 0, 0, cv::INTER_LINEAR);
+    cv::resize(roi, frame_small, cv::Size(roi.cols / mosaicFactor, roi.rows / mosaicFactor), 0, 0, cv::INTER_NEAREST);
     // 元の大きさに補完なしで拡大（ピクセル化を強調）
-    cv::resize(small, roi, cv::Size(roi.cols, roi.rows), 0, 0, cv::INTER_NEAREST);
+    cv::resize(frame_small, roi, cv::Size(roi.cols, roi.rows), 0, 0, cv::INTER_NEAREST);
 }
 
 // ブラー処理（ガウシアンブラー）
@@ -333,7 +394,7 @@ void applyBlur(cv::Mat& frame, const cv::Rect& roiRect, int kernelSize = 15) {
             kernelSize--;
         }
         if (kernelSize < 1) {
-            std::cerr << "applyBlur: ROI too small for blurring" << std::endl;
+            //std::cerr << "applyBlur: ROI too small for blurring" << std::endl;
             return;
         }
     }
@@ -345,6 +406,8 @@ void applyBlur(cv::Mat& frame, const cv::Rect& roiRect, int kernelSize = 15) {
 
     cv::GaussianBlur(roi, roi, cv::Size(kernelSize, kernelSize), 0);
 }
+
+
 
 // preview_api関数を宣言
 extern "C" __declspec(dllexport) MY_API int __stdcall preview_api(const char* image_path, RectInfo* rects, int count, ColorInfo name_color, ColorInfo fixframe_color, bool copyright, char* blacked_type, char* fixframe_type, int blacked_param, int fixframe_param)
@@ -394,9 +457,14 @@ extern "C" __declspec(dllexport) MY_API int __stdcall preview_api(const char* im
 
             std::vector<int> indices;
 
-            float scoreThreshold = 0.01f; // スコアのしきい値（適宜変更）
-            float nmsThreshold = 0.5f;   // NMS のしきい値（適宜変更）
-            cv::dnn::NMSBoxes(boxes, scores, scoreThreshold, nmsThreshold, indices);
+            float scoreThreshold = 0.15f; // スコアのしきい値（適宜変更）
+            //float nmsThreshold = 0.5f;   // NMS のしきい値（適宜変更）
+            // yolo26 は出力側で NMS が不要なので、ここで cv::dnn::NMSBoxes を呼ばない。
+            // cv::dnn::NMSBoxes(boxes, scores, scoreThreshold, nmsThreshold, indices);
+
+            // 代わりに全検出を利用する（必要なら閾値で絞る）
+            indices.resize(scores.size());
+            std::iota(indices.begin(), indices.end(), 0);
 			//if (inpaint == true)
             if (strcmp(blacked_type, "Inpaint") == 0)
 			{
@@ -507,12 +575,12 @@ HANDLE StartProcessWithRedirectedStdout(const std::string& commandLine, PROCESS_
     HANDLE hChildStdOutRead = NULL;
     HANDLE hChildStdOutWrite = NULL;
     if (!CreatePipe(&hChildStdOutRead, &hChildStdOutWrite, &saAttr, 0)) {
-        std::cerr << "CreatePipe (stdout) failed." << std::endl;
+        //std::cerr << "CreatePipe (stdout) failed." << std::endl;
         return NULL;
     }
     // 親側のハンドルが子に継承されないようにする
     if (!SetHandleInformation(hChildStdOutRead, HANDLE_FLAG_INHERIT, 0)) {
-        std::cerr << "SetHandleInformation (stdout) failed." << std::endl;
+        //std::cerr << "SetHandleInformation (stdout) failed." << std::endl;
         return NULL;
     }
     STARTUPINFOA si;
@@ -541,7 +609,7 @@ HANDLE StartProcessWithRedirectedStdout(const std::string& commandLine, PROCESS_
         &si,
         &pi))
     {
-        std::cerr << "CreateProcess (stdout redirect) failed with error: " << GetLastError() << std::endl;
+        //std::cerr << "CreateProcess (stdout redirect) failed with error: " << GetLastError() << std::endl;
         CloseHandle(hChildStdOutWrite);
         CloseHandle(hChildStdOutRead);
         return NULL;
@@ -557,12 +625,12 @@ HANDLE StartProcessWithRedirectedStdin(const std::string& commandLine, PROCESS_I
     HANDLE hChildStdInRead = NULL;
     HANDLE hChildStdInWrite = NULL;
     if (!CreatePipe(&hChildStdInRead, &hChildStdInWrite, &saAttr, 0)) {
-        std::cerr << "CreatePipe (stdin) failed." << std::endl;
+        //std::cerr << "CreatePipe (stdin) failed." << std::endl;
         return NULL;
     }
     // 子プロセスに継承される書き側は不要なので、親側では SetHandleInformation で外す
     if (!SetHandleInformation(hChildStdInWrite, HANDLE_FLAG_INHERIT, 0)) {
-        std::cerr << "SetHandleInformation (stdin) failed." << std::endl;
+        //std::cerr << "SetHandleInformation (stdin) failed." << std::endl;
         return NULL;
     }
     STARTUPINFOA si;
@@ -590,7 +658,7 @@ HANDLE StartProcessWithRedirectedStdin(const std::string& commandLine, PROCESS_I
         &si,
         &pi))
     {
-        std::cerr << "CreateProcess (stdin redirect) failed with error: " << GetLastError() << std::endl;
+        //std::cerr << "CreateProcess (stdin redirect) failed with error: " << GetLastError() << std::endl;
         CloseHandle(hChildStdInRead);
         CloseHandle(hChildStdInWrite);
         return NULL;
@@ -615,25 +683,25 @@ cv::Mat ReadFrameFromPipe(HANDLE hPipe, int width, int height) {
             DWORD err = GetLastError();
             if (err == ERROR_BROKEN_PIPE) {
                 // EOF に到達したと判断
-                std::cerr << "ReadFile returned 0 with ERROR_BROKEN_PIPE." << std::endl;
+                //std::cerr << "ReadFile returned 0 with ERROR_BROKEN_PIPE." << std::endl;
                 break;
             }
             else {
-                std::cerr << "ReadFile failed with error: " << err << std::endl;
+                //std::cerr << "ReadFile failed with error: " << err << std::endl;
                 break;
             }
         }
         if (bytesRead == 0) {
             // データがもう来ないので終了
-            std::cerr << "ReadFile returned 0 bytes." << std::endl;
+            //std::cerr << "ReadFile returned 0 bytes." << std::endl;
             break;
         }
         totalBytesRead += bytesRead;
     }
 
     if (totalBytesRead != frameSize) {
-        std::cerr << "ReadFile incomplete. Expected " << frameSize
-            << " bytes, got " << totalBytesRead << std::endl;
+        //std::cerr << "ReadFile incomplete. Expected " << frameSize
+            //<< " bytes, got " << totalBytesRead << std::endl;
         // ※デバッグ用に受け取った内容を出力可能
         return cv::Mat();  // 空のフレームを返してループ抜けにする
     }
@@ -651,7 +719,7 @@ constexpr size_t PIPE_WRITE_CHUNK = 8 * 1024 * 1024; // 8MB
 
 void WriteFrameToPipe(HANDLE hPipe, const cv::Mat& frame) {
     if (frame.empty() || frame.data == nullptr) {
-        std::cerr << "WriteFrameToPipe: frame is empty or data is null." << std::endl;
+        //std::cerr << "WriteFrameToPipe: frame is empty or data is null." << std::endl;
         return;
     }
     size_t dataSize = frame.total() * frame.elemSize();
@@ -663,16 +731,16 @@ void WriteFrameToPipe(HANDLE hPipe, const cv::Mat& frame) {
         DWORD toWrite = static_cast<DWORD>(std::min<size_t>(dataSize - totalWritten, PIPE_WRITE_CHUNK));
         BOOL success = WriteFile(hPipe, dataPtr + totalWritten, toWrite, &bytesWritten, NULL);
         if (!success || bytesWritten == 0) {
-            std::cerr << "WriteFile failed or incomplete write. Expected " << dataSize
-                << " bytes, wrote " << totalWritten + bytesWritten
-                << " (error=" << GetLastError() << ")" << std::endl;
+            //std::cerr << "WriteFile failed or incomplete write. Expected " << dataSize
+                //<< " bytes, wrote " << totalWritten + bytesWritten
+                //<< " (error=" << GetLastError() << ")" << std::endl;
             break;
         }
         totalWritten += bytesWritten;
     }
     if (totalWritten != dataSize) {
-        std::cerr << "WriteFrameToPipe: incomplete write. Expected " << dataSize
-            << " bytes, wrote " << totalWritten << std::endl;
+        //std::cerr << "WriteFrameToPipe: incomplete write. Expected " << dataSize
+            //<< " bytes, wrote " << totalWritten << std::endl;
     }
 }
 
@@ -689,7 +757,7 @@ void run_ffmpeg_input(const std::string& cmd, std::function<void(HANDLE)> func) 
     PROCESS_INFORMATION pi;
     HANDLE hPipe = StartProcessWithRedirectedStdout(cmd, pi);
     if (hPipe == NULL) {
-        std::cerr << "Failed to start ffmpeg input process." << std::endl;
+        //std::cerr << "Failed to start ffmpeg input process." << std::endl;
         return;
     }
 
@@ -702,7 +770,7 @@ void run_ffmpeg_input(const std::string& cmd, std::function<void(HANDLE)> func) 
     WaitForSingleObject(pi.hProcess, INFINITE);
     DWORD exitCode = 0;
     if (GetExitCodeProcess(pi.hProcess, &exitCode)) {
-        std::cerr << "ffmpeg input process exited with code: " << exitCode << std::endl;
+        //std::cerr << "ffmpeg input process exited with code: " << exitCode << std::endl;
     }
 
 	if (cancelFlag != true)
@@ -717,7 +785,7 @@ void run_ffmpeg_output(const std::string& cmd, std::function<void(HANDLE)> func)
     PROCESS_INFORMATION pi;
     HANDLE hPipe = StartProcessWithRedirectedStdin(cmd, pi);
     if (hPipe == NULL) {
-        std::cerr << "Failed to start ffmpeg output process." << std::endl;
+        //std::cerr << "Failed to start ffmpeg output process." << std::endl;
         return;
     }
 
@@ -746,7 +814,7 @@ bool __stdcall CancelFfmpegProcesses(void) {
     // 入力用プロセスが存在していれば終了
     if (g_ffmpegInputProcessHandle != nullptr) {
         if (!TerminateProcess(g_ffmpegInputProcessHandle, 0)) {
-            std::cerr << "Failed to terminate ffmpeg input process." << std::endl;
+            //std::cerr << "Failed to terminate ffmpeg input process." << std::endl;
             result = false;
         }
         else {
@@ -759,7 +827,7 @@ bool __stdcall CancelFfmpegProcesses(void) {
     // 出力用プロセスが存在していれば終了
     if (g_ffmpegOutputProcessHandle != nullptr) {
         if (!TerminateProcess(g_ffmpegOutputProcessHandle, 0)) {
-            std::cerr << "Failed to terminate ffmpeg output process." << std::endl;
+            //std::cerr << "Failed to terminate ffmpeg output process." << std::endl;
             result = false;
         }
         else {
@@ -778,7 +846,7 @@ void dml_process_frame(const cv::Mat& in_frame, cv::Mat& out_frame, YOLOv8Detect
     cv::Scalar fixframe_Scalar(fixframe_color.b, fixframe_color.g, fixframe_color.r);
     out_frame = in_frame.clone();
 
-    std::cerr << "dml_process_frame: Start processing frame" << std::endl;
+    //std::cerr << "dml_process_frame: Start processing frame" << std::endl;
 
     //if (no_inference == true)
     if (strcmp(blacked_type , "No_Inference") != 0)
@@ -802,9 +870,11 @@ void dml_process_frame(const cv::Mat& in_frame, cv::Mat& out_frame, YOLOv8Detect
 
             std::vector<int> indices;
 
-            float scoreThreshold = 0.01f; // スコアのしきい値（適宜変更）
-            float nmsThreshold = 0.5f;   // NMS のしきい値（適宜変更）
-            cv::dnn::NMSBoxes(boxes, scores, scoreThreshold, nmsThreshold, indices);
+            float scoreThreshold = 0.15f; // スコアのしきい値（適宜変更）
+            //float nmsThreshold = 0.5f;   // NMS のしきい値（適宜変更）
+            //cv::dnn::NMSBoxes(boxes, scores, scoreThreshold, nmsThreshold, indices);
+            indices.resize(scores.size());
+            std::iota(indices.begin(), indices.end(), 0);
 
             if (strcmp(blacked_type, "Inpaint") == 0)
             {
@@ -903,7 +973,7 @@ void dml_process_frame(const cv::Mat& in_frame, cv::Mat& out_frame, YOLOv8Detect
         }
     }
 
-    std::cerr << "dml_process_frame: Finished processing frame" << std::endl;
+    //std::cerr << "dml_process_frame: Finished processing frame" << std::endl;
 }
 
 // ワイド文字列 (std::wstring) を UTF-8 の std::string に変換する関数
@@ -949,7 +1019,7 @@ extern "C" __declspec(dllexport) MY_API int __stdcall dml_main(char* input_video
 
 
     if (!detector.loadModel(model_path)) {
-        std::cerr << "Failed to load model." << std::endl;
+        //std::cerr << "Failed to load model." << std::endl;
         return -1;
     }
     // DLLのディレクトリを取得
@@ -996,15 +1066,15 @@ extern "C" __declspec(dllexport) MY_API int __stdcall dml_main(char* input_video
                 }
                 {
                     std::unique_lock<std::mutex> lock(queue_mutex);
-                    std::cerr << "Write thread loop check: frame_queue.size() = " << frame_queue.size()
-                        << ", finished_reading = " << finished_reading << std::endl;
+                    //std::cerr << "Write thread loop check: frame_queue.size() = " << frame_queue.size()
+                        //<< ", finished_reading = " << finished_reading << std::endl;
                     queue_cv.wait(lock, [&]() { return frame_queue.size() < max_queue_size; });
                     frame_queue.push(frame);
                 }
                 queue_cv.notify_one();
             }
             // ここでパイプを閉じることで、ffmpeg に EOF を通知する
-            std::cerr << "Read thread: closing input pipe handle to signal EOF to ffmpeg." << std::endl;
+            //std::cerr << "Read thread: closing input pipe handle to signal EOF to ffmpeg." << std::endl;
             CloseHandle(input_pipe);
             {
                 std::lock_guard<std::mutex> lock(queue_mutex);
@@ -1033,15 +1103,15 @@ extern "C" __declspec(dllexport) MY_API int __stdcall dml_main(char* input_video
                         })) {
                         // タイムアウト時、書き込み中なら終了しない
                         if (writing_frame) {
-                            std::cerr << "Write thread: wait_for timed out, but writing in progress. Continue waiting." << std::endl;
+                            //std::cerr << "Write thread: wait_for timed out, but writing in progress. Continue waiting." << std::endl;
                             continue;
                         } else {
-                            std::cerr << "Write thread: wait_for timed out (no data for 3 seconds, not writing). Exiting." << std::endl;
+                            //std::cerr << "Write thread: wait_for timed out (no data for 3 seconds, not writing). Exiting." << std::endl;
                             break;
                         }
                     }
                     if (frame_queue.empty() && finished_reading) {
-                        std::cerr << "Exit write loop: frame queue empty and finished_reading is true." << std::endl;
+                        //std::cerr << "Exit write loop: frame queue empty and finished_reading is true." << std::endl;
                         break;
                     }
                     if (!frame_queue.empty()) {
@@ -1057,14 +1127,14 @@ extern "C" __declspec(dllexport) MY_API int __stdcall dml_main(char* input_video
                         total_frame_count += 1;
                         WriteFrameToPipe(output_pipe, processed_frame);
                     } catch (const std::exception& e) {
-                        std::cerr << "Exception in write thread: " << e.what() << std::endl;
+                        //std::cerr << "Exception in write thread: " << e.what() << std::endl;
                     }
                     writing_frame = false; // 書き込み終了
                 }
                 queue_cv.notify_one();
             }
             queue_cv.notify_one();
-            std::cerr << "Write thread: closing output pipe handle to signal EOF to ffmpeg." << std::endl;
+            //std::cerr << "Write thread: closing output pipe handle to signal EOF to ffmpeg." << std::endl;
             CloseHandle(output_pipe);
         });
     });
@@ -1141,7 +1211,8 @@ void LetterBox(const cv::Mat& image, cv::Mat& outImage, cv::Vec4d& params, const
         cv::resize(image, outImage, cv::Size(new_un_pad[0], new_un_pad[1]));
     }
     else {
-        outImage = image.clone();
+        //outImage = image.clone();
+        outImage = image;
     }
 
     int top = int(std::round(dh - 0.1f));
@@ -1155,142 +1226,127 @@ void LetterBox(const cv::Mat& image, cv::Mat& outImage, cv::Vec4d& params, const
     cv::copyMakeBorder(outImage, outImage, top, bottom, left, right, cv::BORDER_CONSTANT, color);
 }
 
-void postprocess(float* rst, int batch_size, std::vector<cv::Mat>& images, std::vector<cv::Vec4d>& params, RectInfo* rects, int count, ColorInfo name_color, ColorInfo fixframe_color, bool copyright, char* blacked_type, char* fixframe_type, int blacked_param, int fixframe_param)
-{
-    // OpenCV の色を作成
 
+void postprocess(float* rst, int batch_size, std::vector<cv::Mat>& images, std::vector<cv::Vec4d>& params, RectInfo* rects, int count, ColorInfo name_color, ColorInfo fixframe_color, bool copyright, char* blacked_type, char* fixframe_type, int blacked_param, int fixframe_param, int out_d1, int out_d2)
+{
     cv::Scalar fixframe_Scalar(fixframe_color.b, fixframe_color.g, fixframe_color.r);
 
+    // out_d1 = detections (例: 300), out_d2 = per_det (例: 6)
+    if (out_d2 < 6) return; // 想定外のフォーマットなら即時 return
+
+    const float score_threshold = 0.15f;
+    //const float nms_threshold = 0.5f;
+
     for (int b = 0; b < batch_size; ++b) {
-        //if (no_inference == true)
-        if (strcmp(blacked_type, "No_Inference") != 0)
-        {
-            cv::Scalar name_color_Scalar(name_color.b, name_color.g, name_color.r);
+        // バッチごとに出力ベースを計算
+        const float* base = rst + static_cast<size_t>(b) * static_cast<size_t>(out_d1) * static_cast<size_t>(out_d2);
 
-            std::vector<cv::Rect> boxes;
-            std::vector<float> scores;
-            std::vector<int> det_rst;
-            static const float score_threshold = 0.01;
-            static const float nms_threshold = 0.5;
-            std::vector<int> indices;
+        std::vector<cv::Rect> boxes;
+        std::vector<float> scores;
+        std::vector<int> class_ids;
 
-            for (int Anchors = 0; Anchors < 19320; Anchors++)
-            {
-                float max_score = 0.0;
-                int max_score_det = 99;
-                float pdata[4];
-                int prob = 4;
-                {
-                    if (rst[b * 5 * 19320 + prob * 19320 + Anchors] > max_score) {
-                        max_score = rst[b * 5 * 19320 + prob * 19320 + Anchors];
-                        max_score_det = prob - 4;
-                        pdata[0] = rst[b * 5 * 19320 + 0 * 19320 + Anchors];
-                        pdata[1] = rst[b * 5 * 19320 + 1 * 19320 + Anchors];
-                        pdata[2] = rst[b * 5 * 19320 + 2 * 19320 + Anchors];
-                        pdata[3] = rst[b * 5 * 19320 + 3 * 19320 + Anchors];
-                    }
-                }
-                if (max_score >= score_threshold)
-                {
-                    float x = (pdata[0] - params[b][2]) / params[b][0];
-                    float y = (pdata[1] - params[b][3]) / params[b][1];
-                    float w = pdata[2] / params[b][0];
-                    float h = pdata[3] / params[b][1];
-                    int left = MAX(int(x - 0.5 * w + 0.5), 0);
-                    int top = MAX(int(y - 0.5 * h + 0.5), 0);
-                    boxes.push_back(cv::Rect(left, top, int(w + 0.5), int(h + 0.5)));
-                    scores.emplace_back(max_score);
-                    det_rst.emplace_back(max_score_det);
-                }
+        if (strcmp(blacked_type, "No_Inference") != 0) {
+            for (int i = 0; i < out_d1; ++i) {
+                const float* det = base + static_cast<size_t>(i) * static_cast<size_t>(out_d2);
+                float score = det[4];
+                if (score < score_threshold) continue;
+
+                float x1_model = det[0];
+                float y1_model = det[1];
+                float x2_model = det[2];
+                float y2_model = det[3];
+                int class_id = static_cast<int>(det[5]);
+
+                // params[b] は LetterBox の戻り値:
+                // params[b] = [ratio_x, ratio_y, pad_w(left), pad_h(top)]
+                float ratio_x = static_cast<float>(params[b][0]);
+                float ratio_y = static_cast<float>(params[b][1]);
+                float pad_w = static_cast<float>(params[b][2]);
+                float pad_h = static_cast<float>(params[b][3]);
+
+                // モデル座標（レターボックスされた入力画像上のピクセル座標） -> 元画像座標
+                float x1 = (x1_model - pad_w) / ratio_x;
+                float y1 = (y1_model - pad_h) / ratio_y;
+                float x2 = (x2_model - pad_w) / ratio_x;
+                float y2 = (y2_model - pad_h) / ratio_y;
+
+                int left = std::max(0, static_cast<int>(std::round(std::min(x1, x2))));
+                int top = std::max(0, static_cast<int>(std::round(std::min(y1, y2))));
+                int width = static_cast<int>(std::round(std::abs(x2 - x1)));
+                int height = static_cast<int>(std::round(std::abs(y2 - y1)));
+
+                if (width <= 0 || height <= 0) continue;
+
+                boxes.emplace_back(left, top, width, height);
+                scores.push_back(score);
+                class_ids.push_back(class_id);
             }
 
-            cv::dnn::NMSBoxes(boxes, scores, score_threshold, nms_threshold, indices);
+            // NMS
+            std::vector<int> indices;
+            //cv::dnn::NMSBoxes(boxes, scores, score_threshold, nms_threshold, indices);
+            // yolo26 は NMS 不要のため、全インデックスを使う
+            indices.resize(scores.size());
+            std::iota(indices.begin(), indices.end(), 0);
 
-            if (strcmp(blacked_type, "Inpaint") == 0)
-            {
+            // apply operations based on blacked_type
+            if (strcmp(blacked_type, "Inpaint") == 0) {
                 cv::Mat mask_frame = cv::Mat::zeros(images[b].size(), CV_8UC1);
-
-                for (const auto& i : indices) {
-                    // 矩形を白（255）で塗りつぶす
-                    cv::rectangle(mask_frame, boxes[i], cv::Scalar(255), cv::FILLED);
+                for (int idx : indices) {
+                    cv::rectangle(mask_frame, boxes[idx], cv::Scalar(255), cv::FILLED);
                 }
-                cv::Mat inpainted_image = images[b].clone();
+                cv::Mat inpainted_image;
                 cv::inpaint(images[b], mask_frame, inpainted_image, 3, cv::INPAINT_TELEA);
                 images[b] = inpainted_image;
             }
-            else if (strcmp(blacked_type, "Mosaic") == 0)
-            {
-                // 画像全体の矩形を生成
+            else if (strcmp(blacked_type, "Mosaic") == 0) {
                 cv::Rect imageRect(0, 0, images[b].cols, images[b].rows);
-
-                // モザイク処理を適用
-                for (const auto& i : indices) {
-                    cv::Rect validRect = boxes[i] & cv::Rect(0, 0, images[b].cols, images[b].rows);
-                    if (validRect.width > MIN_VALID_RECT_SIZE && validRect.height > MIN_VALID_RECT_SIZE) {
-                        applyMosaic(images[b], validRect, DEFAULT_MOSAIC_FACTOR / blacked_param); // mosaicFactor は適宜調整
-                    }
+                for (int idx : indices) {
+                    cv::Rect validRect = boxes[idx] & imageRect;
+                    if (validRect.width > MIN_VALID_RECT_SIZE && validRect.height > MIN_VALID_RECT_SIZE)
+                        applyMosaic(images[b], validRect, DEFAULT_MOSAIC_FACTOR / blacked_param);
                 }
             }
-            else if (strcmp(blacked_type, "Blur") == 0)
-            {
-                // 画像全体の矩形を生成
+            else if (strcmp(blacked_type, "Blur") == 0) {
                 cv::Rect imageRect(0, 0, images[b].cols, images[b].rows);
-
-                // ブラー処理を適用
-                for (const auto& i : indices) {
-                    cv::Rect validRect = boxes[i] & cv::Rect(0, 0, images[b].cols, images[b].rows);
-                    if (validRect.width > MIN_VALID_RECT_SIZE && validRect.height > MIN_VALID_RECT_SIZE) {
-                        applyBlur(images[b], validRect, DEFAULT_BLUR_FACTOR * blacked_param); // カーネルサイズは適宜調整
-                    }
+                for (int idx : indices) {
+                    cv::Rect validRect = boxes[idx] & imageRect;
+                    if (validRect.width > MIN_VALID_RECT_SIZE && validRect.height > MIN_VALID_RECT_SIZE)
+                        applyBlur(images[b], validRect, DEFAULT_BLUR_FACTOR * blacked_param);
                 }
             }
-            else
-            {
-
-                for (int i = 0; i < indices.size(); i++) {
-                    cv::rectangle(images[b], boxes[indices[i]], name_color_Scalar, -1);
+            else {
+                // 単純描画（name_color）
+                cv::Scalar name_color_Scalar(name_color.b, name_color.g, name_color.r);
+                for (int idx : indices) {
+                    cv::rectangle(images[b], boxes[idx], name_color_Scalar, -1);
                 }
             }
-
         }
 
-        // 矩形を描画
-        for (int i = 0; i < count; i++)
-        {
+        // 固定矩形描画 (既存処理)
+        for (int i = 0; i < count; i++) {
             cv::Rect rect(rects[i].x, rects[i].y, rects[i].width, rects[i].height);
             if (strcmp(fixframe_type, "Mosaic") == 0) {
-                // rectのサイズが所定の閾値以上かどうかチェックする
-                if (rect.width > MIN_VALID_RECT_SIZE && rect.height > MIN_VALID_RECT_SIZE) {  // 必要に応じて閾値を調整
-                    // モザイク処理を適用
-                    applyMosaic(images[b], rect, DEFAULT_MOSAIC_FACTOR / fixframe_param); // fixframe_param -> mosaicFactor
-                }
+                if (rect.width > MIN_VALID_RECT_SIZE && rect.height > MIN_VALID_RECT_SIZE)
+                    applyMosaic(images[b], rect, DEFAULT_MOSAIC_FACTOR / fixframe_param);
             }
             else if (strcmp(fixframe_type, "Blur") == 0) {
-                // rectのサイズが所定の閾値以上かどうかチェックする
-                if (rect.width > MIN_VALID_RECT_SIZE && rect.height > MIN_VALID_RECT_SIZE) {  // 必要に応じて閾値を調整
-                    // ブラー処理を適用
-                    applyBlur(images[b], rect, DEFAULT_BLUR_FACTOR * fixframe_param); // fixframe_param -> kernelSize
-                }
+                if (rect.width > MIN_VALID_RECT_SIZE && rect.height > MIN_VALID_RECT_SIZE)
+                    applyBlur(images[b], rect, DEFAULT_BLUR_FACTOR * fixframe_param);
             }
             else {
                 cv::rectangle(images[b], rect, fixframe_Scalar, -1);
             }
         }
 
-        if (copyright == true)
-        {
-            // 貼り付ける画像を読み込む
-            //cv::Mat c_sqex_image = cv::imread("C_SQUARE_ENIX.png");
-            if (!c_sqex_image.empty()) {
-                // 画像の幅と高さ
-                int w = images[b].cols;
-                int h = images[b].rows;
-                // 関数を呼び出して画像を貼り付け
-                images[b] = put_C_SQUARE_ENIX(images[b], c_sqex_image, w, h);
-            }
+        // 透かし(copyright)
+        if (copyright == true && !c_sqex_image.empty()) {
+            int w = images[b].cols;
+            int h = images[b].rows;
+            images[b] = put_C_SQUARE_ENIX(images[b], c_sqex_image, w, h);
         }
     }
-
 }
 
 
@@ -1321,8 +1377,8 @@ extern "C" __declspec(dllexport) MY_API int __stdcall trt_main(char* input_video
 
     // アプリケーション専用のフォルダパスを組み立てる
     std::wstring appFolderPath = std::wstring(localAppDataPath) + std::wstring{ L"\\WoLNamesBlackedOut" };
-    std::wstring engineFilePath = appFolderPath + std::wstring{ L"\\my_yolov8m_s_20251004A.engine" };
-    std::wstring casheFilePath = appFolderPath + std::wstring{ L"\\my_yolov8m_s_20251004A.cashe" };
+    std::wstring engineFilePath = appFolderPath + std::wstring{ L"\\my_yolov8m_s_20260201.engine" };
+    std::wstring casheFilePath = appFolderPath + std::wstring{ L"\\my_yolov8m_s_20260201.cashe" };
 
     std::string engineFilePathStr(engineFilePath.length(),0);
     std::transform(engineFilePath.begin(), engineFilePath.end(), engineFilePathStr.begin(), [](wchar_t c) {
@@ -1348,7 +1404,6 @@ extern "C" __declspec(dllexport) MY_API int __stdcall trt_main(char* input_video
     //ランタイムキャッシュ利用
     nvinfer1::IRuntimeConfig* runtimeConfig = engine->createRuntimeConfig();
     runtimeConfig->setExecutionContextAllocationStrategy(nvinfer1::ExecutionContextAllocationStrategy::kSTATIC);
-	//runtimeConfig->setCudaGraphStrategy(nvinfer1::CudaGraphStrategy::kWHOLE_GRAPH_CAPTURE);   //TensorRT-RTX1.20以降
     nvinfer1::IRuntimeCache* runtimeCache = runtimeConfig->createRuntimeCache();
 
     if (ifs.good()) { //キャッシュがある場合、キャッシュを読み込む
@@ -1429,15 +1484,15 @@ extern "C" __declspec(dllexport) MY_API int __stdcall trt_main(char* input_video
                 }
                 {
                     std::unique_lock<std::mutex> lock(queue_mutex);
-                    std::cerr << "Write thread loop check: frame_queue.size() = " << frame_queue.size()
-                        << ", finished_reading = " << finished_reading << std::endl;
+                    //std::cerr << "Write thread loop check: frame_queue.size() = " << frame_queue.size()
+                        //<< ", finished_reading = " << finished_reading << std::endl;
                     queue_cv.wait(lock, [&]() { return frame_queue.size() < max_queue_size; });
                     frame_queue.push(frame);
                 }
                 queue_cv.notify_one();
             }
             //ここでパイプを閉じることで、ffmpeg に EOF を通知する
-            std::cerr << "Read thread: closing input pipe handle to signal EOF to ffmpeg." << std::endl;
+            //std::cerr << "Read thread: closing input pipe handle to signal EOF to ffmpeg." << std::endl;
             CloseHandle(input_pipe);
             {
                 std::lock_guard<std::mutex> lock(queue_mutex);
@@ -1467,16 +1522,16 @@ extern "C" __declspec(dllexport) MY_API int __stdcall trt_main(char* input_video
                     })) {
                         // タイムアウト時、書き込み中なら終了しない
                         if (writing_frame) {
-                            std::cerr << "Write thread: wait_for timed out, but writing in progress. Continue waiting." << std::endl;
+                            //std::cerr << "Write thread: wait_for timed out, but writing in progress. Continue waiting." << std::endl;
                             continue;
                         }
                         else {
-                            std::cerr << "Write thread: wait_for timed out (no data for3 seconds, not writing). Exiting." << std::endl;
+                            //std::cerr << "Write thread: wait_for timed out (no data for3 seconds, not writing). Exiting." << std::endl;
                             break;
                         }
                     }
                     if (frame_queue.empty() && finished_reading) {
-                        std::cerr << "Exit write loop: frame queue empty and finished_reading is true." << std::endl;
+                        //std::cerr << "Exit write loop: frame queue empty and finished_reading is true." << std::endl;
                         break;
                     }
                     while (!frame_queue.empty() && frames.size() < max_batch) {
@@ -1485,7 +1540,7 @@ extern "C" __declspec(dllexport) MY_API int __stdcall trt_main(char* input_video
                     }
                 }
                 if (frames.empty()) {
-                    std::cerr << "No frames to process, exiting write loop." << std::endl;
+                    //std::cerr << "No frames to process, exiting write loop." << std::endl;
                     break;
                 }
                 writing_frame = true; // 書き込み開始
@@ -1512,33 +1567,17 @@ extern "C" __declspec(dllexport) MY_API int __stdcall trt_main(char* input_video
                     cudaMemcpyAsync(static_cast<float*>(buffers[inputIndex]) + i * idims.d[1] * idims.d[2] * idims.d[3], blobs[i].data, idims.d[1] * idims.d[2] * idims.d[3] * sizeof(float), cudaMemcpyHostToDevice, stream);
                 }
 
-//                // 実行
-//                // select optimization profile based on available profiles (safe fallback)
-//                int profileIdx =0;
-//                int nbProfiles =1;
-//#if defined(NDEBUG)
-// (void)nbProfiles;
-//#endif
-//try {
-// nbProfiles = engine->getNbOptimizationProfiles();
-//} catch (...) {
-// nbProfiles =1;
-//}
-//if (nbProfiles <=0) profileIdx =0;
-//else profileIdx = std::min(n -1, nbProfiles -1);
-
-                //context->setOptimizationProfileAsync(profileIdx, stream);
                 context->setOptimizationProfileAsync(0, stream);
                 context->enqueueV3(stream);
-                cudaStreamSynchronize(stream);
+                //cudaStreamSynchronize(stream);
 
                 // デバイス -> ホストへ n 件分だけコピー
                 size_t outPerImg = odims.d[1] * odims.d[2];
                 cudaMemcpyAsync(rst, buffers[outputIndex], n * outPerImg * sizeof(float), cudaMemcpyDeviceToHost, stream);
-                cudaStreamSynchronize(stream);
+                //cudaStreamSynchronize(stream);
 
                 // 後処理へ実バッチ数を渡す
-                postprocess(rst, n, frames, params, rects, count, name_color, fixframe_color, copyright, blacked_type, fixframe_type, blacked_param, fixframe_param);
+                postprocess(rst, n, frames, params, rects, count, name_color, fixframe_color, copyright, blacked_type, fixframe_type, blacked_param, fixframe_param, odims.d[1], odims.d[2]);
                 for (auto& frame : frames) {
                     WriteFrameToPipe(output_pipe, frame);
                 }
@@ -1548,7 +1587,7 @@ extern "C" __declspec(dllexport) MY_API int __stdcall trt_main(char* input_video
                 queue_cv.notify_one();
             }
             queue_cv.notify_one();
-            std::cerr << "Write thread: closing output pipe handle to signal EOF to ffmpeg." << std::endl;
+            //std::cerr << "Write thread: closing output pipe handle to signal EOF to ffmpeg." << std::endl;
             CloseHandle(output_pipe);
             });
         });
