@@ -12,6 +12,7 @@
 #include <thread>
 #include <winrt/base.h>
 #include <numeric>
+#include <cstdint>
 #define MY_MODULE_EXPORTS
 #ifdef MY_MODULE_EXPORTS
 #define MY_API __declspec(dllexport)
@@ -23,6 +24,7 @@
 HANDLE g_ffmpegInputProcessHandle = nullptr;
 HANDLE g_ffmpegOutputProcessHandle = nullptr;
 std::atomic<bool> cancelFlag = false;
+std::atomic<uint64_t> g_runId{ 0 };
 constexpr int MIN_VALID_RECT_SIZE = 10;
 constexpr int DEFAULT_MOSAIC_FACTOR = 10;
 constexpr int DEFAULT_BLUR_FACTOR = 5;
@@ -177,9 +179,6 @@ bool YOLOv8Detector::loadModel(const char* model_path)
 
 bool YOLOv8Detector::PreProcess2(cv::Mat& iImg, int targetWidth, int targetHeight, cv::Mat& oImg)
 {
-    // 入力画像のコピーを作成
-    oImg = iImg.clone();
-
     // 目標のアスペクト比
     float targetRatio = static_cast<float>(targetWidth) / targetHeight;
     // 入力画像のアスペクト比
@@ -187,27 +186,84 @@ bool YOLOv8Detector::PreProcess2(cv::Mat& iImg, int targetWidth, int targetHeigh
 
     // 横長、またはアスペクト比が同じ場合：横幅基準でリサイズ
     if (imgRatio >= targetRatio) {
-        // 横幅をtargetWidthに合わせるのでスケールは入力横幅 / targetWidth
+        // 横幅を targetWidth に合わせるのでスケールは入力横幅 / targetWidth
         resizeScales = iImg.cols / static_cast<float>(targetWidth);
-        // 高さは元サイズから同じスケールで調整
-        cv::resize(oImg, oImg, cv::Size(targetWidth, static_cast<int>(iImg.rows / resizeScales)), 0, 0, cv::INTER_LINEAR);
+        int newHeight = static_cast<int>(iImg.rows / resizeScales);
+        // 入力画像から直接出力へリサイズ
+        cv::resize(iImg, oImg, cv::Size(targetWidth, std::max(1, newHeight)), 0, 0, cv::INTER_LINEAR);
     }
     // 縦長の場合：縦幅基準でリサイズ
     else {
-        // 縦幅をtargetHeightに合わせるのでスケールは入力縦幅 / targetHeight
+        // 縦幅を targetHeight に合わせるのでスケールは入力縦幅 / targetHeight
         resizeScales = iImg.rows / static_cast<float>(targetHeight);
-        cv::resize(oImg, oImg, cv::Size(static_cast<int>(iImg.cols / resizeScales), targetHeight), 0, 0, cv::INTER_LINEAR);
+        int newWidth = static_cast<int>(iImg.cols / resizeScales);
+        cv::resize(iImg, oImg, cv::Size(std::max(1, newWidth), targetHeight), 0, 0, cv::INTER_LINEAR);
     }
 
     // 出力テンソル（背景は0で埋める＝黒）の作成
     cv::Mat tempImg = cv::Mat::zeros(targetHeight, targetWidth, CV_8UC3);
-    // リサイズ済み画像を左上にコピー（必要に応じて中央寄せやオフセットを追加可能）
-    oImg.copyTo(tempImg(cv::Rect(0, 0, oImg.cols, oImg.rows)));
+
+    // リサイズ済み画像を左上にコピー（サイズが0にならないようガード）
+    if (!oImg.empty() && oImg.cols > 0 && oImg.rows > 0) {
+        int copyW = std::min(oImg.cols, tempImg.cols);
+        int copyH = std::min(oImg.rows, tempImg.rows);
+        oImg.copyTo(tempImg(cv::Rect(0, 0, copyW, copyH)));
+    }
+
     oImg = tempImg;
 
     return true;
 }
-
+//bool YOLOv8Detector::PreProcess2(cv::Mat& iImg, int targetWidth, int targetHeight, cv::Mat& oImg)
+//{
+//    // 目標のアスペクト比
+//    float targetRatio = static_cast<float>(targetWidth) / targetHeight;
+//    // 入力画像のアスペクト比
+//    float imgRatio = static_cast<float>(iImg.cols) / iImg.rows;
+//
+//    // 横長、またはアスペクト比が同じ場合：横幅基準でリサイズ
+//    if (imgRatio >= targetRatio) {
+//        // 横幅を targetWidth に合わせるのでスケールは入力横幅 / targetWidth
+//        resizeScales = iImg.cols / static_cast<float>(targetWidth);
+//        int newHeight = static_cast<int>(iImg.rows / resizeScales);
+//        // 入力画像から直接出力へリサイズ
+//        cv::resize(iImg, oImg, cv::Size(targetWidth, std::max(1, newHeight)), 0, 0, cv::INTER_LINEAR);
+//    }
+//    // 縦長の場合：縦幅基準でリサイズ
+//    else {
+//        // 縦幅を targetHeight に合わせるのでスケールは入力縦幅 / targetHeight
+//        resizeScales = iImg.rows / static_cast<float>(targetHeight);
+//        int newWidth = static_cast<int>(iImg.cols / resizeScales);
+//        cv::resize(iImg, oImg, cv::Size(std::max(1, newWidth), targetHeight), 0, 0, cv::INTER_LINEAR);
+//    }
+//
+//    // リサイズ結果が空なら黒画像を返す
+//    if (oImg.empty()) {
+//        oImg = cv::Mat::zeros(targetHeight, targetWidth, CV_8UC3);
+//        return true;
+//    }
+//
+//    // リサイズ済み画像がターゲットより大きければ左上を切り取る（安全策）
+//    if (oImg.cols > targetWidth || oImg.rows > targetHeight) {
+//        int cropW = std::min(oImg.cols, targetWidth);
+//        int cropH = std::min(oImg.rows, targetHeight);
+//        oImg = oImg(cv::Rect(0, 0, cropW, cropH)).clone();
+//    }
+//
+//    // 右下に必要なパディング量を計算して copyMakeBorder で埋める（左上に配置）
+//    int top = 0;
+//    int left = 0;
+//    int bottom = targetHeight - oImg.rows;
+//    int right = targetWidth - oImg.cols;
+//    if (bottom < 0) bottom = 0;
+//    if (right < 0) right = 0;
+//
+//    if (bottom > 0 || right > 0) {
+//        cv::copyMakeBorder(oImg, oImg, top, bottom, left, right, cv::BORDER_CONSTANT, cv::Scalar(0, 0, 0));
+//    }
+//
+//    return true;
+//}
 std::optional<std::vector<YOLOv8Detector::BoundingBox>> YOLOv8Detector::inference(const cv::Mat& image)
 {
     const int N = 1; // batch size
@@ -810,7 +866,13 @@ void run_ffmpeg_output(const std::string& cmd, std::function<void(HANDLE)> func)
 extern "C" __declspec(dllexport)
 bool __stdcall CancelFfmpegProcesses(void) {
     bool result = true;
-    cancelFlag = true;
+    //cancelFlag = true;
+    // インスタンス全体をキャンセルするトークンをインクリメントして
+    // すべての実行ループを無効化する（ race-safe な停止指示）
+    g_runId.fetch_add(1);
+
+    cancelFlag.store(true, std::memory_order_release);
+
     // 入力用プロセスが存在していれば終了
     if (g_ffmpegInputProcessHandle != nullptr) {
         if (!TerminateProcess(g_ffmpegInputProcessHandle, 0)) {
@@ -1047,7 +1109,13 @@ extern "C" __declspec(dllexport) MY_API int __stdcall dml_main(char* input_video
     cv::Mat current_frame;
     cv::Mat processed_frame;
     total_frame_count = 0;
-    cancelFlag = false;
+    //cancelFlag = false;
+    
+    // 実行ごとのトークンを取得（これがこの run の識別子）
+    uint64_t myRunId = g_runId.fetch_add(1) + 1;
+
+    // この実行専用の cancelFlag を初期化（以降のループは runId と合わせてチェック）
+    cancelFlag.store(false, std::memory_order_release);
 
     // フレームを保存するキュー
     std::queue<cv::Mat> frame_queue;
@@ -1059,7 +1127,10 @@ extern "C" __declspec(dllexport) MY_API int __stdcall dml_main(char* input_video
      // 読み取りスレッド：ffmpeg_input の出力（raw video）を読み込む
     std::thread read_thread([&]() {
         run_ffmpeg_input(ffmpeg_input_cmd, [&](HANDLE input_pipe) {
-            while (!cancelFlag) {
+            //while (!cancelFlag) {
+            // ループ継続条件に runId を追加
+            while (!cancelFlag.load(std::memory_order_acquire) && g_runId.load(std::memory_order_acquire) == myRunId) {
+
                 cv::Mat frame = ReadFrameFromPipe(input_pipe, width, height);
                 if (frame.empty()) {
                     break;
@@ -1068,7 +1139,15 @@ extern "C" __declspec(dllexport) MY_API int __stdcall dml_main(char* input_video
                     std::unique_lock<std::mutex> lock(queue_mutex);
                     //std::cerr << "Write thread loop check: frame_queue.size() = " << frame_queue.size()
                         //<< ", finished_reading = " << finished_reading << std::endl;
-                    queue_cv.wait(lock, [&]() { return frame_queue.size() < max_queue_size; });
+                    queue_cv.wait(lock, [&]() { 
+                        //return frame_queue.size() < max_queue_size; });
+                        return frame_queue.size() < max_queue_size
+                            || cancelFlag.load(std::memory_order_acquire)
+                            || g_runId.load(std::memory_order_acquire) != myRunId;
+                        });
+                    if (cancelFlag.load(std::memory_order_acquire) || g_runId.load(std::memory_order_acquire) != myRunId) {
+                        break;
+                    }
                     frame_queue.push(frame);
                 }
                 queue_cv.notify_one();
@@ -1093,13 +1172,18 @@ extern "C" __declspec(dllexport) MY_API int __stdcall dml_main(char* input_video
 
     std::thread write_thread([&]() {
         run_ffmpeg_output(ffmpeg_output_cmd, [&](HANDLE output_pipe) {
-            while (!cancelFlag) {
+            //while (!cancelFlag) {
+            while (!cancelFlag.load(std::memory_order_acquire) && g_runId.load(std::memory_order_acquire) == myRunId) {
                 cv::Mat processed_frame;
                 {
                     std::unique_lock<std::mutex> lock(queue_mutex);
                     // 1秒間待っても返事がなければタイムアウトとする
                     if (!queue_cv.wait_for(lock, std::chrono::milliseconds(2000), [&]() {
-                        return !frame_queue.empty() || finished_reading;
+                        return !frame_queue.empty() || finished_reading
+                            //;
+                            || cancelFlag.load(std::memory_order_acquire)
+                            || g_runId.load(std::memory_order_acquire) != myRunId;
+
                         })) {
                         // タイムアウト時、書き込み中なら終了しない
                         if (writing_frame) {
@@ -1110,6 +1194,10 @@ extern "C" __declspec(dllexport) MY_API int __stdcall dml_main(char* input_video
                             break;
                         }
                     }
+                    if (cancelFlag.load(std::memory_order_acquire) || g_runId.load(std::memory_order_acquire) != myRunId) {
+                        break;
+                    }
+
                     if (frame_queue.empty() && finished_reading) {
                         //std::cerr << "Exit write loop: frame queue empty and finished_reading is true." << std::endl;
                         break;
@@ -1231,123 +1319,265 @@ void postprocess(float* rst, int batch_size, std::vector<cv::Mat>& images, std::
 {
     cv::Scalar fixframe_Scalar(fixframe_color.b, fixframe_color.g, fixframe_color.r);
 
-    // out_d1 = detections (例: 300), out_d2 = per_det (例: 6)
-    if (out_d2 < 6) return; // 想定外のフォーマットなら即時 return
+    if (out_d2 < 6) return;
 
     const float score_threshold = 0.15f;
-    //const float nms_threshold = 0.5f;
 
-    for (int b = 0; b < batch_size; ++b) {
-        // バッチごとに出力ベースを計算
-        const float* base = rst + static_cast<size_t>(b) * static_cast<size_t>(out_d1) * static_cast<size_t>(out_d2);
+    // 事前計算（ループ内で繰り返さない）
+    const bool doInference = (strcmp(blacked_type, "No_Inference") != 0);
+    const bool isInpaint = (strcmp(blacked_type, "Inpaint") == 0);
+    const bool isMosaic = (strcmp(blacked_type, "Mosaic") == 0);
+    const bool isBlur = (strcmp(blacked_type, "Blur") == 0);
 
-        std::vector<cv::Rect> boxes;
-        std::vector<float> scores;
-        std::vector<int> class_ids;
+    const bool fixIsMosaic = (strcmp(fixframe_type, "Mosaic") == 0);
+    const bool fixIsBlur = (strcmp(fixframe_type, "Blur") == 0);
 
-        if (strcmp(blacked_type, "No_Inference") != 0) {
-            for (int i = 0; i < out_d1; ++i) {
-                const float* det = base + static_cast<size_t>(i) * static_cast<size_t>(out_d2);
-                float score = det[4];
-                if (score < score_threshold) continue;
+    const cv::Scalar name_color_Scalar(name_color.b, name_color.g, name_color.r);
 
-                float x1_model = det[0];
-                float y1_model = det[1];
-                float x2_model = det[2];
-                float y2_model = det[3];
-                int class_id = static_cast<int>(det[5]);
+    // 並列度（スレッド数）。0 は 1 と見なす
+    unsigned hw = std::thread::hardware_concurrency();
+    unsigned thread_count = hw == 0 ? 1u : std::min<unsigned>(hw, static_cast<unsigned>(std::max(1, batch_size)));
 
-                // params[b] は LetterBox の戻り値:
-                // params[b] = [ratio_x, ratio_y, pad_w(left), pad_h(top)]
-                float ratio_x = static_cast<float>(params[b][0]);
-                float ratio_y = static_cast<float>(params[b][1]);
-                float pad_w = static_cast<float>(params[b][2]);
-                float pad_h = static_cast<float>(params[b][3]);
+    auto worker = [&](int start, int end) {
+        for (int b = start; b < end; ++b) {
+            // 出力の基点
+            const float* base = rst + static_cast<size_t>(b) * static_cast<size_t>(out_d1) * static_cast<size_t>(out_d2);
 
-                // モデル座標（レターボックスされた入力画像上のピクセル座標） -> 元画像座標
-                float x1 = (x1_model - pad_w) / ratio_x;
-                float y1 = (y1_model - pad_h) / ratio_y;
-                float x2 = (x2_model - pad_w) / ratio_x;
-                float y2 = (y2_model - pad_h) / ratio_y;
+            std::vector<cv::Rect> boxes;
+            std::vector<float> scores;
+            boxes.reserve(64); // 適度にreserveして再確保を減らす
+            scores.reserve(64);
 
-                int left = std::max(0, static_cast<int>(std::round(std::min(x1, x2))));
-                int top = std::max(0, static_cast<int>(std::round(std::min(y1, y2))));
-                int width = static_cast<int>(std::round(std::abs(x2 - x1)));
-                int height = static_cast<int>(std::round(std::abs(y2 - y1)));
+            if (doInference) {
+                for (int i = 0; i < out_d1; ++i) {
+                    const float* det = base + static_cast<size_t>(i) * static_cast<size_t>(out_d2);
+                    float score = det[4];
+                    if (score < score_threshold) continue;
 
-                if (width <= 0 || height <= 0) continue;
+                    float x1_model = det[0];
+                    float y1_model = det[1];
+                    float x2_model = det[2];
+                    float y2_model = det[3];
 
-                boxes.emplace_back(left, top, width, height);
-                scores.push_back(score);
-                class_ids.push_back(class_id);
+                    float ratio_x = static_cast<float>(params[b][0]);
+                    float ratio_y = static_cast<float>(params[b][1]);
+                    float pad_w = static_cast<float>(params[b][2]);
+                    float pad_h = static_cast<float>(params[b][3]);
+
+                    float x1 = (x1_model - pad_w) / ratio_x;
+                    float y1 = (y1_model - pad_h) / ratio_y;
+                    float x2 = (x2_model - pad_w) / ratio_x;
+                    float y2 = (y2_model - pad_h) / ratio_y;
+
+                    int left = std::max(0, static_cast<int>(std::round(std::min(x1, x2))));
+                    int top = std::max(0, static_cast<int>(std::round(std::min(y1, y2))));
+                    int width = static_cast<int>(std::round(std::abs(x2 - x1)));
+                    int height = static_cast<int>(std::round(std::abs(y2 - y1)));
+                    if (width <= 0 || height <= 0) continue;
+
+                    boxes.emplace_back(left, top, width, height);
+                    scores.push_back(score);
+                }
+
+                // indices の代わりに boxes のインデックスを直接使う
+                if (isInpaint) {
+                    cv::Mat mask_frame = cv::Mat::zeros(images[b].size(), CV_8UC1);
+                    for (size_t idx = 0; idx < boxes.size(); ++idx) {
+                        cv::rectangle(mask_frame, boxes[idx], cv::Scalar(255), cv::FILLED);
+                    }
+                    if (!mask_frame.empty()) {
+                        cv::Mat inpainted;
+                        cv::inpaint(images[b], mask_frame, inpainted, 3, cv::INPAINT_TELEA);
+                        images[b] = std::move(inpainted);
+                    }
+                }
+                else if (isMosaic) {
+                    cv::Rect imageRect(0, 0, images[b].cols, images[b].rows);
+                    for (size_t idx = 0; idx < boxes.size(); ++idx) {
+                        cv::Rect validRect = boxes[idx] & imageRect;
+                        if (validRect.width > MIN_VALID_RECT_SIZE && validRect.height > MIN_VALID_RECT_SIZE)
+                            applyMosaic(images[b], validRect, std::max(1, DEFAULT_MOSAIC_FACTOR / std::max(1, blacked_param)));
+                    }
+                }
+                else if (isBlur) {
+                    cv::Rect imageRect(0, 0, images[b].cols, images[b].rows);
+                    for (size_t idx = 0; idx < boxes.size(); ++idx) {
+                        cv::Rect validRect = boxes[idx] & imageRect;
+                        if (validRect.width > MIN_VALID_RECT_SIZE && validRect.height > MIN_VALID_RECT_SIZE)
+                            applyBlur(images[b], validRect, std::max(1, DEFAULT_BLUR_FACTOR * blacked_param));
+                    }
+                }
+                else {
+                    for (size_t idx = 0; idx < boxes.size(); ++idx) {
+                        cv::rectangle(images[b], boxes[idx], name_color_Scalar, -1);
+                    }
+                }
             }
 
-            // NMS
-            std::vector<int> indices;
-            //cv::dnn::NMSBoxes(boxes, scores, score_threshold, nms_threshold, indices);
-            // yolo26 は NMS 不要のため、全インデックスを使う
-            indices.resize(scores.size());
-            std::iota(indices.begin(), indices.end(), 0);
+            // 固定矩形（常に行う）
+            if (count > 0) {
+                for (int i = 0; i < count; ++i) {
+                    cv::Rect rect(rects[i].x, rects[i].y, rects[i].width, rects[i].height);
+                    if (fixIsMosaic) {
+                        if (rect.width > MIN_VALID_RECT_SIZE && rect.height > MIN_VALID_RECT_SIZE)
+                            applyMosaic(images[b], rect, std::max(1, DEFAULT_MOSAIC_FACTOR / std::max(1, fixframe_param)));
+                    }
+                    else if (fixIsBlur) {
+                        if (rect.width > MIN_VALID_RECT_SIZE && rect.height > MIN_VALID_RECT_SIZE)
+                            applyBlur(images[b], rect, std::max(1, DEFAULT_BLUR_FACTOR * fixframe_param));
+                    }
+                    else {
+                        cv::rectangle(images[b], rect, fixframe_Scalar, -1);
+                    }
+                }
+            }
 
-            // apply operations based on blacked_type
-            if (strcmp(blacked_type, "Inpaint") == 0) {
-                cv::Mat mask_frame = cv::Mat::zeros(images[b].size(), CV_8UC1);
-                for (int idx : indices) {
-                    cv::rectangle(mask_frame, boxes[idx], cv::Scalar(255), cv::FILLED);
-                }
-                cv::Mat inpainted_image;
-                cv::inpaint(images[b], mask_frame, inpainted_image, 3, cv::INPAINT_TELEA);
-                images[b] = inpainted_image;
-            }
-            else if (strcmp(blacked_type, "Mosaic") == 0) {
-                cv::Rect imageRect(0, 0, images[b].cols, images[b].rows);
-                for (int idx : indices) {
-                    cv::Rect validRect = boxes[idx] & imageRect;
-                    if (validRect.width > MIN_VALID_RECT_SIZE && validRect.height > MIN_VALID_RECT_SIZE)
-                        applyMosaic(images[b], validRect, DEFAULT_MOSAIC_FACTOR / blacked_param);
-                }
-            }
-            else if (strcmp(blacked_type, "Blur") == 0) {
-                cv::Rect imageRect(0, 0, images[b].cols, images[b].rows);
-                for (int idx : indices) {
-                    cv::Rect validRect = boxes[idx] & imageRect;
-                    if (validRect.width > MIN_VALID_RECT_SIZE && validRect.height > MIN_VALID_RECT_SIZE)
-                        applyBlur(images[b], validRect, DEFAULT_BLUR_FACTOR * blacked_param);
-                }
-            }
-            else {
-                // 単純描画（name_color）
-                cv::Scalar name_color_Scalar(name_color.b, name_color.g, name_color.r);
-                for (int idx : indices) {
-                    cv::rectangle(images[b], boxes[idx], name_color_Scalar, -1);
-                }
+            // 透かし
+            if (copyright == true && !c_sqex_image.empty()) {
+                int w = images[b].cols;
+                int h = images[b].rows;
+                images[b] = put_C_SQUARE_ENIX(images[b], c_sqex_image, w, h);
             }
         }
+        };
 
-        // 固定矩形描画 (既存処理)
-        for (int i = 0; i < count; i++) {
-            cv::Rect rect(rects[i].x, rects[i].y, rects[i].width, rects[i].height);
-            if (strcmp(fixframe_type, "Mosaic") == 0) {
-                if (rect.width > MIN_VALID_RECT_SIZE && rect.height > MIN_VALID_RECT_SIZE)
-                    applyMosaic(images[b], rect, DEFAULT_MOSAIC_FACTOR / fixframe_param);
-            }
-            else if (strcmp(fixframe_type, "Blur") == 0) {
-                if (rect.width > MIN_VALID_RECT_SIZE && rect.height > MIN_VALID_RECT_SIZE)
-                    applyBlur(images[b], rect, DEFAULT_BLUR_FACTOR * fixframe_param);
-            }
-            else {
-                cv::rectangle(images[b], rect, fixframe_Scalar, -1);
-            }
+    if (thread_count <= 1 || batch_size <= 1) {
+        worker(0, batch_size);
+    }
+    else {
+        std::vector<std::thread> threads;
+        threads.reserve(thread_count);
+        int chunk = (batch_size + thread_count - 1) / thread_count;
+        int start = 0;
+        for (unsigned t = 0; t < thread_count && start < batch_size; ++t) {
+            int end = std::min(batch_size, start + chunk);
+            threads.emplace_back(worker, start, end);
+            start = end;
         }
-
-        // 透かし(copyright)
-        if (copyright == true && !c_sqex_image.empty()) {
-            int w = images[b].cols;
-            int h = images[b].rows;
-            images[b] = put_C_SQUARE_ENIX(images[b], c_sqex_image, w, h);
-        }
+        for (auto& th : threads) if (th.joinable()) th.join();
     }
 }
+//void postprocess(float* rst, int batch_size, std::vector<cv::Mat>& images, std::vector<cv::Vec4d>& params, RectInfo* rects, int count, ColorInfo name_color, ColorInfo fixframe_color, bool copyright, char* blacked_type, char* fixframe_type, int blacked_param, int fixframe_param, int out_d1, int out_d2)
+//{
+//    cv::Scalar fixframe_Scalar(fixframe_color.b, fixframe_color.g, fixframe_color.r);
+//
+//    // out_d1 = detections (例: 300), out_d2 = per_det (例: 6)
+//    if (out_d2 < 6) return; // 想定外のフォーマットなら即時 return
+//
+//    const float score_threshold = 0.15f;
+//    //const float nms_threshold = 0.5f;
+//
+//    for (int b = 0; b < batch_size; ++b) {
+//        // バッチごとに出力ベースを計算
+//        const float* base = rst + static_cast<size_t>(b) * static_cast<size_t>(out_d1) * static_cast<size_t>(out_d2);
+//
+//        std::vector<cv::Rect> boxes;
+//        std::vector<float> scores;
+//        std::vector<int> class_ids;
+//
+//        if (strcmp(blacked_type, "No_Inference") != 0) {
+//            for (int i = 0; i < out_d1; ++i) {
+//                const float* det = base + static_cast<size_t>(i) * static_cast<size_t>(out_d2);
+//                float score = det[4];
+//                if (score < score_threshold) continue;
+//
+//                float x1_model = det[0];
+//                float y1_model = det[1];
+//                float x2_model = det[2];
+//                float y2_model = det[3];
+//                int class_id = static_cast<int>(det[5]);
+//
+//                // params[b] は LetterBox の戻り値:
+//                // params[b] = [ratio_x, ratio_y, pad_w(left), pad_h(top)]
+//                float ratio_x = static_cast<float>(params[b][0]);
+//                float ratio_y = static_cast<float>(params[b][1]);
+//                float pad_w = static_cast<float>(params[b][2]);
+//                float pad_h = static_cast<float>(params[b][3]);
+//
+//                // モデル座標（レターボックスされた入力画像上のピクセル座標） -> 元画像座標
+//                float x1 = (x1_model - pad_w) / ratio_x;
+//                float y1 = (y1_model - pad_h) / ratio_y;
+//                float x2 = (x2_model - pad_w) / ratio_x;
+//                float y2 = (y2_model - pad_h) / ratio_y;
+//
+//                int left = std::max(0, static_cast<int>(std::round(std::min(x1, x2))));
+//                int top = std::max(0, static_cast<int>(std::round(std::min(y1, y2))));
+//                int width = static_cast<int>(std::round(std::abs(x2 - x1)));
+//                int height = static_cast<int>(std::round(std::abs(y2 - y1)));
+//
+//                if (width <= 0 || height <= 0) continue;
+//
+//                boxes.emplace_back(left, top, width, height);
+//                scores.push_back(score);
+//                class_ids.push_back(class_id);
+//            }
+//
+//            // NMS
+//            std::vector<int> indices;
+//            //cv::dnn::NMSBoxes(boxes, scores, score_threshold, nms_threshold, indices);
+//            // yolo26 は NMS 不要のため、全インデックスを使う
+//            indices.resize(scores.size());
+//            std::iota(indices.begin(), indices.end(), 0);
+//
+//            // apply operations based on blacked_type
+//            if (strcmp(blacked_type, "Inpaint") == 0) {
+//                cv::Mat mask_frame = cv::Mat::zeros(images[b].size(), CV_8UC1);
+//                for (int idx : indices) {
+//                    cv::rectangle(mask_frame, boxes[idx], cv::Scalar(255), cv::FILLED);
+//                }
+//                cv::Mat inpainted_image;
+//                cv::inpaint(images[b], mask_frame, inpainted_image, 3, cv::INPAINT_TELEA);
+//                images[b] = inpainted_image;
+//            }
+//            else if (strcmp(blacked_type, "Mosaic") == 0) {
+//                cv::Rect imageRect(0, 0, images[b].cols, images[b].rows);
+//                for (int idx : indices) {
+//                    cv::Rect validRect = boxes[idx] & imageRect;
+//                    if (validRect.width > MIN_VALID_RECT_SIZE && validRect.height > MIN_VALID_RECT_SIZE)
+//                        applyMosaic(images[b], validRect, DEFAULT_MOSAIC_FACTOR / blacked_param);
+//                }
+//            }
+//            else if (strcmp(blacked_type, "Blur") == 0) {
+//                cv::Rect imageRect(0, 0, images[b].cols, images[b].rows);
+//                for (int idx : indices) {
+//                    cv::Rect validRect = boxes[idx] & imageRect;
+//                    if (validRect.width > MIN_VALID_RECT_SIZE && validRect.height > MIN_VALID_RECT_SIZE)
+//                        applyBlur(images[b], validRect, DEFAULT_BLUR_FACTOR * blacked_param);
+//                }
+//            }
+//            else {
+//                // 単純描画（name_color）
+//                cv::Scalar name_color_Scalar(name_color.b, name_color.g, name_color.r);
+//                for (int idx : indices) {
+//                    cv::rectangle(images[b], boxes[idx], name_color_Scalar, -1);
+//                }
+//            }
+//        }
+//
+//        // 固定矩形描画 (既存処理)
+//        for (int i = 0; i < count; i++) {
+//            cv::Rect rect(rects[i].x, rects[i].y, rects[i].width, rects[i].height);
+//            if (strcmp(fixframe_type, "Mosaic") == 0) {
+//                if (rect.width > MIN_VALID_RECT_SIZE && rect.height > MIN_VALID_RECT_SIZE)
+//                    applyMosaic(images[b], rect, DEFAULT_MOSAIC_FACTOR / fixframe_param);
+//            }
+//            else if (strcmp(fixframe_type, "Blur") == 0) {
+//                if (rect.width > MIN_VALID_RECT_SIZE && rect.height > MIN_VALID_RECT_SIZE)
+//                    applyBlur(images[b], rect, DEFAULT_BLUR_FACTOR * fixframe_param);
+//            }
+//            else {
+//                cv::rectangle(images[b], rect, fixframe_Scalar, -1);
+//            }
+//        }
+//
+//        // 透かし(copyright)
+//        if (copyright == true && !c_sqex_image.empty()) {
+//            int w = images[b].cols;
+//            int h = images[b].rows;
+//            images[b] = put_C_SQUARE_ENIX(images[b], c_sqex_image, w, h);
+//        }
+//    }
+//}
 
 
 // TensorRTを使用した物体検出処理
@@ -1562,9 +1792,16 @@ extern "C" __declspec(dllexport) MY_API int __stdcall trt_main(char* input_video
                 nvinfer1::Dims4 dynamicInputDims = { n, idims.d[1], idims.d[2], idims.d[3] };
                 context->setInputShape("images", dynamicInputDims);
 
-                // ホスト -> デバイスへ n 件分コピー
-                for (int i =0; i < n; ++i) {
-                    cudaMemcpyAsync(static_cast<float*>(buffers[inputIndex]) + i * idims.d[1] * idims.d[2] * idims.d[3], blobs[i].data, idims.d[1] * idims.d[2] * idims.d[3] * sizeof(float), cudaMemcpyHostToDevice, stream);
+                //// ホスト -> デバイスへ n 件分コピー
+                //for (int i =0; i < n; ++i) {
+                //    cudaMemcpyAsync(static_cast<float*>(buffers[inputIndex]) + i * idims.d[1] * idims.d[2] * idims.d[3], blobs[i].data, idims.d[1] * idims.d[2] * idims.d[3] * sizeof(float), cudaMemcpyHostToDevice, stream);
+                //}
+                
+                // 例: 入力コピー（型安全に ptr<float>() を使う）
+                for (int i = 0; i < n; ++i) {
+                    float* srcPtr = blobs[i].ptr<float>(0);
+                    float* dstPtr = static_cast<float*>(buffers[inputIndex]) + static_cast<size_t>(i) * idims.d[1] * idims.d[2] * idims.d[3];
+                    cudaMemcpyAsync(dstPtr, srcPtr, idims.d[1] * idims.d[2] * idims.d[3] * sizeof(float), cudaMemcpyHostToDevice, stream);
                 }
 
                 context->setOptimizationProfileAsync(0, stream);
@@ -1574,7 +1811,7 @@ extern "C" __declspec(dllexport) MY_API int __stdcall trt_main(char* input_video
                 // デバイス -> ホストへ n 件分だけコピー
                 size_t outPerImg = odims.d[1] * odims.d[2];
                 cudaMemcpyAsync(rst, buffers[outputIndex], n * outPerImg * sizeof(float), cudaMemcpyDeviceToHost, stream);
-                //cudaStreamSynchronize(stream);
+                cudaStreamSynchronize(stream);
 
                 // 後処理へ実バッチ数を渡す
                 postprocess(rst, n, frames, params, rects, count, name_color, fixframe_color, copyright, blacked_type, fixframe_type, blacked_param, fixframe_param, odims.d[1], odims.d[2]);
@@ -1621,4 +1858,5 @@ extern "C" __declspec(dllexport) MY_API int __stdcall trt_main(char* input_video
 
     return 0;
 }
+
 
